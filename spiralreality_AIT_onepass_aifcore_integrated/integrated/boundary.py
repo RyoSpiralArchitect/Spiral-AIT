@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
 import logging
 import math
+import operator
 import random
 import time
 from dataclasses import dataclass
@@ -11,7 +14,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, TYPE_CH
 from .boundary_cpp import CompiledStudentHandle, compiled_backend_devices, load_compiled_student
 from .boundary_julia import JuliaStudentHandle, julia_backend_devices, load_julia_student
 from .np_compat import np
-from .phase import PhaseBasisLearner
+from .phase import PhaseBasisLearner, PhaseBasisState
 from .utils import is_cjk, is_kana, is_latin, is_punct, is_space, seeded_vector, sigmoid
 
 if TYPE_CHECKING:  # pragma: no cover - type hints only
@@ -22,6 +25,8 @@ logger = logging.getLogger(__name__)
 
 
 _CHAR_CLASSES = ["space", "latin", "cjk", "kana", "punct", "digit", "other"]
+_LEXICAL_VERSION = "signed-char-ngram-v1"
+_LEXICAL_TEMPLATES = ((-1,), (0,), (1,), (2,), (-1, 0), (0, 1), (1, 2))
 
 
 logger = logging.getLogger(__name__)
@@ -71,6 +76,8 @@ class BoundarySequence:
     labels: np.ndarray
     curvature: np.ndarray
     phases: np.ndarray
+    lexical_features: Optional[Tuple[Tuple[Tuple[int, int], ...], ...]] = None
+    lexical_buckets: int = 0
 
 
 @dataclass
@@ -95,6 +102,8 @@ class StudentTrainingConfig:
     use_encoder_context: bool = True
     context_lr: float = 0.02
     context_hidden_dim: int = 32
+    lexical_buckets: int = 0
+    lexical_lr: float = 0.05
 
 
 class BoundaryStudent:
@@ -109,6 +118,8 @@ class BoundaryStudent:
         self.window_dim = self.emb_dim * (self.window * 2)
         self.dtype = np.float32 if hasattr(np, "float32") else float
         self.max_grad_norm: Optional[float] = 10.0
+        self.lexical_buckets = 0
+        self._fitted_backend: Optional[str] = None
         self._init_parameters()
         self.encoder_adapter: Optional["SpectralTransformerAdapter"] = None
         self.use_encoder_context: bool = True
@@ -143,6 +154,9 @@ class BoundaryStudent:
                 self.compiled_backend = None
 
     def configure(self, cfg: StudentTrainingConfig) -> None:
+        lexical_buckets = self._validate_lexical_config(cfg)
+        self.history = []
+        self.best_state = None
         self.hidden_dim = cfg.hidden_dim
         self.emb_dim = cfg.emb_dim
         self.window = cfg.window
@@ -152,12 +166,19 @@ class BoundaryStudent:
         else:
             self.dtype = np.float32 if hasattr(np, "float32") else float
         self.max_grad_norm = cfg.max_grad_norm
+        self.lexical_buckets = lexical_buckets
         self._init_parameters()
+        self._fitted_backend = "python"
         self.use_encoder_context = bool(getattr(cfg, "use_encoder_context", True))
         self.context_hidden_dim = int(getattr(cfg, "context_hidden_dim", self.context_hidden_dim))
         if self.context_hidden_dim <= 0:
             self.context_hidden_dim = 1
+        self.ctx_W1 = self.ctx_b1 = self.ctx_w = None
+        self.ctx_b = 0.0
         self._ensure_context_parameters()
+        # Native heads do not yet implement the lexical emission residual.
+        if self.lexical_buckets:
+            return
         self._select_backend_device(cfg.device_preference)
         if self.julia_backend is not None:
             try:
@@ -177,6 +198,31 @@ class BoundaryStudent:
                     exc_info=True,
                 )
                 self.compiled_backend = None
+
+    @staticmethod
+    def _validate_lexical_config(cfg: StudentTrainingConfig) -> int:
+        try:
+            buckets = operator.index(cfg.lexical_buckets)
+        except TypeError as exc:
+            raise ValueError("lexical_buckets must be a nonnegative integer") from exc
+        if buckets < 0:
+            raise ValueError("lexical_buckets must be a nonnegative integer")
+        if not math.isfinite(cfg.lexical_lr) or cfg.lexical_lr <= 0:
+            raise ValueError("lexical_lr must be finite and positive")
+        return buckets
+
+    def _require_python_head(self) -> None:
+        if self._fitted_backend in ("compiled", "julia"):
+            raise ValueError(
+                f"The fitted {self._fitted_backend} boundary head has no synchronized "
+                "Python weights; confidence, AIF and Python-logit evaluation require "
+                "training or loading a Python boundary head"
+            )
+
+    def _require_fitted_backend(self) -> None:
+        if self._fitted_backend in ("compiled", "julia"):
+            if getattr(self, f"{self._fitted_backend}_backend") is None:
+                raise RuntimeError(f"The fitted {self._fitted_backend} boundary backend is unavailable")
 
     def bind_encoder(self, encoder: "SpectralTransformerAdapter") -> None:
         self.encoder_adapter = encoder
@@ -223,6 +269,7 @@ class BoundaryStudent:
         self.gate_w = rand_vec(3, 0.05)
         self.gate_b = 0.0
         self.transitions = np.zeros((2, 2), dtype=self.dtype)
+        self.lexical_weights = np.zeros(self.lexical_buckets, dtype=self.dtype)
 
     def _context_ready(self) -> bool:
         if not self.use_encoder_context:
@@ -345,24 +392,72 @@ class BoundaryStudent:
     # Dataset construction helpers
     # ------------------------------------------------------------------
     def build_sequences(self, texts: Sequence[str], segments: Sequence[Sequence[str]]) -> List[BoundarySequence]:
+        self._validate_training_data(texts, segments)
         return [self._build_sequence(text, seg) for text, seg in zip(texts, segments)]
+
+    @staticmethod
+    def _validate_training_data(texts: Sequence[str], segments: Sequence[Sequence[str]]) -> None:
+        if len(texts) != len(segments):
+            raise ValueError("texts and segments must have the same length")
+        for index, (text, parts) in enumerate(zip(texts, segments)):
+            if not isinstance(text, str):
+                raise ValueError(f"text {index} must be a string")
+            if isinstance(parts, str) or any(not isinstance(part, str) for part in parts):
+                raise ValueError(f"segments {index} must be a sequence of strings")
+            if "".join(parts) != text or (text and any(not part for part in parts)):
+                raise ValueError(f"segments {index} must partition the original text exactly")
 
     def _build_sequence(self, text: str, seg: Sequence[str]) -> BoundarySequence:
         categories = np.array([_char_category(ch) for ch in text], dtype=int)
         labels = np.array(self._segments_to_boundaries(text, seg), dtype=int)
-        curvature_raw = self.phase.curvature(text)
-        curvature = np.array(
-            curvature_raw.to_list() if hasattr(curvature_raw, "to_list") else list(curvature_raw),
-            dtype=self.dtype,
-        )
-        phases = np.array([self.phase.phase_triplet(ch) for ch in text], dtype=self.dtype)
-        return BoundarySequence(
+        seq = BoundarySequence(
             text=text,
             categories=categories,
             labels=labels,
-            curvature=curvature,
-            phases=phases,
+            curvature=np.zeros(len(text), dtype=self.dtype),
+            phases=np.zeros((len(text), 3), dtype=self.dtype),
+            lexical_features=self._lexical_features(text) if self.lexical_buckets else None,
+            lexical_buckets=self.lexical_buckets,
         )
+        self._refresh_phase_features(seq)
+        return seq
+
+    def _lexical_features(self, text: str) -> Tuple[Tuple[Tuple[int, int], ...], ...]:
+        """Seven fixed positional templates with deterministic signed hashing.
+
+        Offsets are relative to the character left of each boundary. Unicode
+        code points and explicit BOS/EOS markers keep keys unambiguous. Hash
+        collisions add their signed counts in both forward and backward paths.
+        The table bounds parameter memory independently of the vocabulary.
+        """
+        if not self.lexical_buckets:
+            return ()
+        features = []
+        for boundary in range(max(0, len(text) - 1)):
+            counts: Dict[int, int] = {}
+            for template in _LEXICAL_TEMPLATES:
+                values = []
+                for offset in template:
+                    index = boundary + offset
+                    values.append("BOS" if index < 0 else "EOS" if index >= len(text) else str(ord(text[index])))
+                key = f"{','.join(map(str, template))}:{','.join(values)}".encode("ascii")
+                hashed = int.from_bytes(hashlib.blake2b(key, digest_size=8).digest(), "little")
+                bucket = (hashed & ((1 << 63) - 1)) % self.lexical_buckets
+                sign = -1 if hashed >> 63 else 1
+                counts[bucket] = counts.get(bucket, 0) + sign
+            features.append(tuple((bucket, count) for bucket, count in sorted(counts.items()) if count))
+        return tuple(features)
+
+    def _refresh_phase_features(self, seq: BoundarySequence) -> None:
+        """Only text, categories, labels and lexical hashes are immutable."""
+        if not seq.text:
+            return
+        curvature_raw = self.phase.curvature(seq.text)
+        seq.curvature = np.array(
+            curvature_raw.to_list() if hasattr(curvature_raw, "to_list") else list(curvature_raw),
+            dtype=self.dtype,
+        )
+        seq.phases = np.array([self.phase.phase_triplet(ch) for ch in seq.text], dtype=self.dtype)
 
     def _segments_to_boundaries(self, text: str, seg: Sequence[str]) -> List[int]:
         cuts = set()
@@ -432,6 +527,14 @@ class BoundaryStudent:
         return self.W_window @ vec + self.b_window
 
     def _forward_sequence(self, seq: BoundarySequence) -> Tuple[List[float], List[Dict[str, object]]]:
+        # The basis changes during training and can be restored by early stopping.
+        # Refresh cached train and validation features using the same basis as inference.
+        self._refresh_phase_features(seq)
+        if self.lexical_buckets and (
+            seq.lexical_features is None or seq.lexical_buckets != self.lexical_buckets
+        ):
+            seq.lexical_features = self._lexical_features(seq.text)
+            seq.lexical_buckets = self.lexical_buckets
         length = len(seq.categories)
         embeddings = np.zeros((length, self.emb_dim), dtype=self.dtype)
         for i, cat in enumerate(seq.categories):
@@ -458,11 +561,13 @@ class BoundaryStudent:
                 and idx + 1 < ctx_H.shape[0]
             ):
                 delta = ctx_H[idx + 1] - ctx_H[idx]
-                ctx_delta = np.array(delta, dtype=self.dtype, copy=False)
+                ctx_delta = np.asarray(delta, dtype=self.dtype)
                 ctx_pre = self.ctx_W1 @ ctx_delta + self.ctx_b1
                 ctx_hidden = np.tanh(ctx_pre)
                 ctx_score = float(np.dot(self.ctx_w, ctx_hidden)) + float(self.ctx_b)
-            logits.append(core + gate_score + ctx_score)
+            lexical_features = seq.lexical_features[idx] if self.lexical_buckets else ()
+            lexical_score = sum(float(self.lexical_weights[bucket]) * count for bucket, count in lexical_features)
+            logits.append(core + gate_score + ctx_score + lexical_score)
             caches.append(
                 {
                     "indices": indices,
@@ -472,6 +577,7 @@ class BoundaryStudent:
                     "gate_feats": gate_feats,
                     "ctx_delta": ctx_delta,
                     "ctx_hidden": ctx_hidden,
+                    "lexical_features": lexical_features,
                 }
             )
         return logits, caches
@@ -490,8 +596,11 @@ class BoundaryStudent:
         length = len(logits)
         if length == 0:
             return 0.0, [], [[0.0, 0.0], [0.0, 0.0]], []
-        emit = [[0.0 for _ in range(length)], [logits[i] for i in range(length)]]
-        trans = self.transitions
+        # Avoid float32 accumulation across long sequences, even when model
+        # parameters are float32. Dynamic-programming scores use Python floats.
+        trans = [[float(value) for value in row] for row in self.transitions]
+        logits = [float(value) for value in logits]
+        emit = [[0.0 for _ in range(length)], logits]
         alpha = [[0.0, 0.0] for _ in range(length)]
         alpha[0][0] = emit[0][0]
         alpha[0][1] = emit[1][0]
@@ -522,25 +631,32 @@ class BoundaryStudent:
         grad_logits = [0.0 for _ in range(length)]
         marginals: List[List[float]] = []
         for i in range(length):
-            gamma0 = alpha[i][0] + beta[i][0] - log_z
-            gamma1 = alpha[i][1] + beta[i][1] - log_z
-            p0 = math.exp(gamma0)
-            p1 = math.exp(gamma1)
+            gamma0 = alpha[i][0] + beta[i][0]
+            gamma1 = alpha[i][1] + beta[i][1]
+            # Local two-state normalization keeps probabilities in [0, 1]
+            # without relying on cancellation against the global partition.
+            difference = gamma1 - gamma0
+            if difference >= 0:
+                p1 = 1.0 / (1.0 + math.exp(-difference))
+            else:
+                exponent = math.exp(difference)
+                p1 = exponent / (1.0 + exponent)
+            p0 = 1.0 - p1
             grad_logits[i] = p1 - labels[i]
             marginals.append([p0, p1])
 
         grad_trans = [[0.0, 0.0], [0.0, 0.0]]
         for i in range(1, length):
+            pair_scores = [
+                alpha[i - 1][prev] + trans[prev][state] + emit[state][i] + beta[i][state]
+                for prev in (0, 1) for state in (0, 1)
+            ]
+            maximum = max(pair_scores)
+            pair_weights = [math.exp(score - maximum) for score in pair_scores]
+            pair_total = sum(pair_weights)
             for prev in (0, 1):
                 for state in (0, 1):
-                    xi = (
-                        alpha[i - 1][prev]
-                        + trans[prev][state]
-                        + emit[state][i]
-                        + beta[i][state]
-                        - log_z
-                    )
-                    grad_trans[prev][state] += math.exp(xi)
+                    grad_trans[prev][state] += pair_weights[2 * prev + state] / pair_total
         for i in range(1, length):
             grad_trans[labels[i - 1]][labels[i]] -= 1.0
         grad_logits_arr = np.array(grad_logits, dtype=self.dtype)
@@ -572,13 +688,33 @@ class BoundaryStudent:
         cfg: Optional[StudentTrainingConfig] = None,
     ) -> Dict[str, object]:
         cfg = cfg or StudentTrainingConfig()
+        lexical_buckets = self._validate_lexical_config(cfg)
+        texts_list = list(texts)
+        segments_list = [list(seg) if not isinstance(seg, str) else seg for seg in segments]
+        self._validate_training_data(texts_list, segments_list)
+        if cfg.batch_size <= 0 or cfg.epochs < 0:
+            raise ValueError("batch_size must be positive and epochs must be nonnegative")
+        if cfg.hidden_dim <= 0 or cfg.emb_dim <= 0 or cfg.window <= 0:
+            raise ValueError("hidden_dim, emb_dim and window must be positive")
+        if not 0.0 <= cfg.validation_split < 1.0:
+            raise ValueError("validation_split must be in [0, 1)")
+        # Validate before configuring either the Python or a native backend.
+        texts, segments = texts_list, segments_list
+        if not lexical_buckets:
+            # A successful native retrain must not retain an earlier residual.
+            self.lexical_buckets = 0
+            self.lexical_weights = np.zeros(0, dtype=self.dtype)
+        self.best_state = None
+        self.history = []
         fallbacks: List[str] = []
         use_context = bool(getattr(cfg, "use_encoder_context", False)) and self.encoder_adapter is not None
-        if not use_context and self.julia_backend is not None:
+        if not use_context and not lexical_buckets and self.julia_backend is not None:
             cfg_dict = dict(cfg.__dict__)
             try:
                 self._select_backend_device(cfg.device_preference)
                 summary = self.julia_backend.train(texts, segments, cfg_dict)
+                self._fitted_backend = "julia"
+                self.use_encoder_context = False
                 if isinstance(summary, dict):
                     self.history = list(summary.get("history", []))
                     backend_id = f"julia:{self.julia_backend.device}"
@@ -594,11 +730,13 @@ class BoundaryStudent:
                 fallbacks.append(backend_id)
                 logger.warning("Julia backend training failed, falling back to alternative implementation.", exc_info=True)
                 self.julia_backend = None
-        if not use_context and self.compiled_backend is not None:
+        if not use_context and not lexical_buckets and self.compiled_backend is not None:
             cfg_dict = dict(cfg.__dict__)
             try:
                 self._select_backend_device(cfg.device_preference)
                 summary = self.compiled_backend.train(texts, segments, cfg_dict)
+                self._fitted_backend = "compiled"
+                self.use_encoder_context = False
                 if isinstance(summary, dict):
                     self.history = list(summary.get("history", []))
                     backend_id = f"compiled:{self.compiled_backend.device}"
@@ -616,20 +754,10 @@ class BoundaryStudent:
                 logger.warning("Compiled backend training failed, reverting to pure Python implementation.", exc_info=True)
                 self.compiled_backend = None
         self.configure(cfg)
-        texts_list = list(texts)
-        segments_list = [list(seg) for seg in segments]
-        dataset_size = min(len(texts_list), len(segments_list))
+        dataset_size = len(texts_list)
         if dataset_size == 0:
             self.history = []
-            backend = (
-                f"julia:{self.julia_backend.device}"
-                if self.julia_backend is not None
-                else (
-                    f"compiled:{self.compiled_backend.device}"
-                    if self.compiled_backend is not None
-                    else "numpy"
-                )
-            )
+            backend = "numpy"
             meta = self._backend_metadata(backend, fallbacks)
             summary: Dict[str, object] = {
                 "train_sequences": 0,
@@ -644,6 +772,8 @@ class BoundaryStudent:
                 "cache_sequences": bool(cfg.cache_sequences),
                 "shuffle_train": bool(cfg.shuffle_train),
                 "cached_sequences": 0,
+                "lexical_buckets": self.lexical_buckets,
+                "lexical_lr": cfg.lexical_lr,
                 "available_devices": self.backend_inventory(),
                 "backend_used": meta["backend_used"],
             }
@@ -675,6 +805,7 @@ class BoundaryStudent:
 
         train_tokens = sum(seq_token_count(idx) for idx in train_idx)
         best_val = float("inf")
+        best_epoch: Optional[int] = None
         patience = 0
         history: List[Dict[str, float]] = []
         start_time = time.perf_counter()
@@ -702,6 +833,7 @@ class BoundaryStudent:
                 metrics.update({"val_loss": val_loss, "val_f1": val_f1})
                 if val_loss + 1e-6 < best_val:
                     best_val = val_loss
+                    best_epoch = epoch + 1
                     patience = 0
                     self.best_state = self._capture_state()
                 else:
@@ -716,21 +848,24 @@ class BoundaryStudent:
         elapsed = max(1e-9, time.perf_counter() - start_time)
         summary: Dict[str, object] = {
             "train_sequences": len(train_idx),
+            "train_indices": sorted(train_idx),
+            "validation_indices": sorted(val_idx),
             "history": history,
             "train_tokens": train_tokens,
             "train_seconds": elapsed,
-            "tokens_per_second": train_tokens / elapsed if train_tokens else 0.0,
-            "backend": (
-                f"julia:{self.julia_backend.device}"
-                if self.julia_backend is not None
-                else (f"compiled:{self.compiled_backend.device}" if self.compiled_backend is not None else "numpy")
-            ),
+            "tokens_per_second": train_tokens * len(history) / elapsed if train_tokens else 0.0,
+            "processed_train_tokens": train_tokens * len(history),
+            "epochs_completed": len(history),
+            "best_epoch": best_epoch,
+            "backend": "numpy",
             "dtype": getattr(self.dtype, "name", getattr(self.dtype, "__name__", str(self.dtype))),
             "cache_sequences": bool(cfg.cache_sequences),
             "shuffle_train": bool(cfg.shuffle_train),
             "cached_sequences": len(sequence_cache) if cfg.cache_sequences else 0,
             "available_devices": self.backend_inventory(),
             "device_preference": cfg.device_preference,
+            "lexical_buckets": self.lexical_buckets,
+            "lexical_lr": cfg.lexical_lr,
         }
         meta = self._backend_metadata(str(summary["backend"]), fallbacks)
         summary.setdefault("backend_used", meta["backend_used"])
@@ -739,10 +874,10 @@ class BoundaryStudent:
         if val_seqs:
             summary["val_sequences"] = len(val_seqs)
             summary["val_tokens"] = sum(int(len(seq.labels)) + 1 for seq in val_seqs)
-            last = history[-1]
-            if "val_loss" in last:
-                summary["val_loss"] = last["val_loss"]
-                summary["val_f1"] = last["val_f1"]
+            # Report the model actually returned, which may predate the final epoch.
+            val_loss, val_f1 = self.evaluate(val_seqs)
+            summary["val_loss"] = val_loss
+            summary["val_f1"] = val_f1
         backend_used = summary.get("backend")
         if isinstance(backend_used, str):
             self._last_backend_used = backend_used
@@ -761,6 +896,8 @@ class BoundaryStudent:
             "gate_b": 0.0,
             "transitions": np.zeros((2, 2), dtype=self.dtype),
         }
+        if self.lexical_buckets:
+            grads["lexical_weights"] = {}
         if self.ctx_W1 is not None:
             grads["ctx_W1"] = np.zeros_like(self.ctx_W1)
         if self.ctx_b1 is not None:
@@ -787,6 +924,10 @@ class BoundaryStudent:
             gate_feats = cache["gate_feats"]
             ctx_delta = cache.get("ctx_delta")
             ctx_hidden = cache.get("ctx_hidden")
+            if self.lexical_buckets:
+                lexical_grads = grads["lexical_weights"]
+                for bucket, count in cache["lexical_features"]:
+                    lexical_grads[bucket] = lexical_grads.get(bucket, 0.0) + grad_logit * count
 
             grads["gate_w"] += grad_logit * gate_feats
             grads["gate_b"] += grad_logit
@@ -796,8 +937,8 @@ class BoundaryStudent:
             grads["b_out"] += grad_logit
 
             if ctx_delta is not None and ctx_hidden is not None and "ctx_w" in grads:
-                ctx_hidden_arr = np.array(ctx_hidden, dtype=self.dtype, copy=False)
-                ctx_delta_arr = np.array(ctx_delta, dtype=self.dtype, copy=False)
+                ctx_hidden_arr = np.asarray(ctx_hidden, dtype=self.dtype)
+                ctx_delta_arr = np.asarray(ctx_delta, dtype=self.dtype)
                 grads["ctx_w"] += grad_logit * ctx_hidden_arr
                 grads["ctx_b"] += grad_logit
                 if "ctx_W1" in grads and "ctx_b1" in grads and self.ctx_w is not None:
@@ -850,6 +991,8 @@ class BoundaryStudent:
         total += float(np.sum(self.W_out * self.W_out))
         total += float(np.sum(self.gate_w * self.gate_w))
         total += float(np.sum(self.embeddings * self.embeddings))
+        if self.lexical_buckets:
+            total += float(np.sum(self.lexical_weights * self.lexical_weights))
         if self.ctx_W1 is not None:
             total += float(np.sum(self.ctx_W1 * self.ctx_W1))
         if self.ctx_w is not None:
@@ -865,6 +1008,9 @@ class BoundaryStudent:
         accum["gate_w"] += grads["gate_w"]
         accum["gate_b"] += grads["gate_b"]
         accum["transitions"] += grads["transitions"]
+        if "lexical_weights" in accum:
+            for bucket, value in grads["lexical_weights"].items():
+                accum["lexical_weights"][bucket] = accum["lexical_weights"].get(bucket, 0.0) + value
         if "ctx_W1" in accum and "ctx_W1" in grads:
             accum["ctx_W1"] += grads["ctx_W1"]
         if "ctx_b1" in accum and "ctx_b1" in grads:
@@ -881,7 +1027,7 @@ class BoundaryStudent:
             if norm > cfg.max_grad_norm:
                 grad_scale = cfg.max_grad_norm / (norm + 1e-9)
         scale = base_scale * grad_scale
-        crf_scale = cfg.crf_lr * grad_scale
+        crf_scale = cfg.crf_lr / max(1, batch_size) * grad_scale
 
         self.embeddings -= scale * (grads["embeddings"] + cfg.reg * self.embeddings)
         self.W_window -= scale * (grads["W_window"] + cfg.reg * self.W_window)
@@ -891,6 +1037,11 @@ class BoundaryStudent:
         self.gate_w -= scale * (grads["gate_w"] + cfg.reg * self.gate_w)
         self.gate_b -= scale * grads["gate_b"]
         self.transitions -= crf_scale * (grads["transitions"] + cfg.reg * self.transitions)
+        if self.lexical_buckets:
+            lexical_scale = cfg.lexical_lr / max(1, batch_size) * grad_scale
+            self.lexical_weights *= 1.0 - lexical_scale * cfg.reg
+            for bucket, value in grads["lexical_weights"].items():
+                self.lexical_weights[bucket] -= lexical_scale * value
         if any(key in grads for key in ("ctx_W1", "ctx_b1", "ctx_w")):
             ctx_scale = cfg.context_lr / max(1, batch_size) * grad_scale
             if self.ctx_W1 is not None and "ctx_W1" in grads:
@@ -911,6 +1062,7 @@ class BoundaryStudent:
         total += float(np.sum(grads["transitions"] * grads["transitions"]))
         total += float(grads["b_out"] ** 2)
         total += float(grads["gate_b"] ** 2)
+        total += sum(float(value) ** 2 for value in grads.get("lexical_weights", {}).values())
         if "ctx_W1" in grads:
             total += float(np.sum(grads["ctx_W1"] * grads["ctx_W1"]))
         if "ctx_b1" in grads:
@@ -922,6 +1074,18 @@ class BoundaryStudent:
 
     def _capture_state(self) -> Dict[str, object]:
         state: Dict[str, object] = {
+            "fitted_backend": self._fitted_backend or "python",
+            "architecture": {
+                "hidden_dim": self.hidden_dim,
+                "emb_dim": self.emb_dim,
+                "window": self.window,
+                "dtype": getattr(self.dtype, "__name__", str(self.dtype)),
+            },
+            "_phase": {
+                "dim": self.phase.dim,
+                "lr": self.phase.lr,
+                "basis": self.phase.export_state().basis,
+            },
             "embeddings": self.embeddings.tolist() if hasattr(self.embeddings, "tolist") else [row[:] for row in self.embeddings],
             "W_window": self.W_window.tolist() if hasattr(self.W_window, "tolist") else [row[:] for row in self.W_window],
             "b_window": self.b_window.tolist() if hasattr(self.b_window, "tolist") else self.b_window[:],
@@ -930,7 +1094,14 @@ class BoundaryStudent:
             "gate_w": self.gate_w.tolist() if hasattr(self.gate_w, "tolist") else self.gate_w[:],
             "gate_b": self.gate_b,
             "transitions": self.transitions.tolist() if hasattr(self.transitions, "tolist") else [row[:] for row in self.transitions],
+            "lexical": {
+                "version": _LEXICAL_VERSION,
+                "buckets": self.lexical_buckets,
+                "weights": self.lexical_weights.tolist(),
+            },
         }
+        if self.encoder_adapter is not None and hasattr(self.encoder_adapter, "export_state"):
+            state["_encoder"] = copy.deepcopy(self.encoder_adapter.export_state())
         state["use_encoder_context"] = bool(self.use_encoder_context)
         state["context_hidden_dim"] = int(self.context_hidden_dim)
         if self.ctx_W1 is not None:
@@ -947,8 +1118,42 @@ class BoundaryStudent:
         return state
 
     def _restore_state(self, state: Dict[str, object]) -> None:
+        self._fitted_backend = state.get("fitted_backend", "python")
+        architecture = state.get("architecture", {})
+        if architecture.get("dtype") == "float64" and hasattr(np, "float64"):
+            self.dtype = np.float64
+        elif architecture.get("dtype") == "float32" and hasattr(np, "float32"):
+            self.dtype = np.float32
+        lexical = state.get("lexical")
+        if lexical is None:
+            self.lexical_buckets = 0
+            self.lexical_weights = np.zeros(0, dtype=self.dtype)
+        else:
+            if lexical.get("version") != _LEXICAL_VERSION:
+                raise ValueError("unsupported lexical feature version in checkpoint")
+            buckets = lexical["buckets"]
+            if not isinstance(buckets, int) or buckets < 0:
+                raise ValueError("invalid lexical bucket count in checkpoint")
+            weights = np.array(lexical["weights"], dtype=self.dtype)
+            if weights.shape != (buckets,) or not np.all(np.isfinite(weights)):
+                raise ValueError("invalid lexical weights in checkpoint")
+            self.lexical_buckets, self.lexical_weights = buckets, weights
         self.embeddings = np.array(state["embeddings"], dtype=self.dtype)
         self.W_window = np.array(state["W_window"], dtype=self.dtype)
+        # Older checkpoints have no architecture block; infer it from the weights.
+        self.emb_dim = int(self.embeddings.shape[1])
+        self.hidden_dim = int(self.W_window.shape[0])
+        self.window_dim = int(self.W_window.shape[1])
+        if self.window_dim % (2 * self.emb_dim):
+            raise ValueError("checkpoint window weights do not match embedding dimensions")
+        self.window = self.window_dim // (2 * self.emb_dim)
+        if "_phase" in state:
+            phase_state = state["_phase"]
+            self.phase.dim = int(phase_state["dim"])
+            self.phase.lr = float(phase_state["lr"])
+            self.phase.load_state(PhaseBasisState(basis=copy.deepcopy(phase_state["basis"])))
+        if "_encoder" in state and self.encoder_adapter is not None:
+            self.encoder_adapter.load_state(copy.deepcopy(state["_encoder"]))
         self.b_window = np.array(state["b_window"], dtype=self.dtype)
         self.W_out = np.array(state["W_out"], dtype=self.dtype)
         self.b_out = float(state["b_out"])
@@ -987,8 +1192,9 @@ class BoundaryStudent:
             self.ctx_b = 0.0
 
     def export_state(self) -> Dict[str, object]:
+        self._require_fitted_backend()
         state = self._capture_state()
-        if self.julia_backend is not None:
+        if self._fitted_backend == "julia":
             try:
                 state["_julia"] = {
                     "backend": self.julia_backend.backend,
@@ -996,24 +1202,39 @@ class BoundaryStudent:
                     "state": self.julia_backend.export_state(),
                 }
             except Exception as exc:
-                logger.warning(
-                    "Failed to export Julia boundary backend state", exc_info=True
-                )
-        if self.compiled_backend is not None:
+                raise RuntimeError("Failed to export fitted Julia boundary backend state") from exc
+        if self._fitted_backend == "compiled":
             try:
                 state["_compiled"] = {
                     "device": self.compiled_backend.device,
                     "state": self.compiled_backend.export_state(),
                 }
             except Exception as exc:
-                logger.warning(
-                    "Failed to export compiled boundary backend state", exc_info=True
-                )
+                raise RuntimeError("Failed to export fitted compiled boundary backend state") from exc
         return state
 
     def load_state(self, state: Dict[str, object]) -> None:
         compiled_state = state.get("_compiled") if isinstance(state, dict) else None
         julia_state = state.get("_julia") if isinstance(state, dict) else None
+        fitted = state.get("fitted_backend")
+        if fitted is None:
+            candidates = [name for name, value in (("compiled", compiled_state), ("julia", julia_state)) if value is not None]
+            lexical = state.get("lexical", {})
+            if state.get("use_encoder_context", False) or lexical.get("buckets", 0):
+                fitted = "python"
+            elif len(candidates) > 1:
+                raise ValueError("Legacy checkpoint has ambiguous fitted native backend ownership")
+            else:
+                fitted = candidates[0] if candidates else "python"
+        if fitted not in ("python", "compiled", "julia"):
+            raise ValueError("Unsupported fitted boundary backend in checkpoint")
+        native_state = compiled_state if fitted == "compiled" else julia_state
+        native_handle = getattr(self, f"{fitted}_backend", None)
+        if fitted != "python":
+            if native_state is None or native_handle is None:
+                raise ValueError(f"Checkpoint requires its fitted {fitted} backend and serialized weights")
+            if state.get("use_encoder_context", False) or state.get("lexical", {}).get("buckets", 0):
+                raise ValueError("Native checkpoint cannot use Python-only context or lexical emissions")
         base = dict(state) if isinstance(state, dict) else state
         if isinstance(base, dict) and "_compiled" in base:
             base = dict(base)
@@ -1022,30 +1243,24 @@ class BoundaryStudent:
             base = dict(base)
             base.pop("_julia", None)
         self._restore_state(base)
+        self._fitted_backend = fitted
         self._ensure_context_parameters()
-        if julia_state and self.julia_backend is not None:
+        if fitted == "python":
+            # Installed native handles do not contain this checkpoint's fitted
+            # Python weights and must never substitute their own predictions.
+            self.julia_backend = self.compiled_backend = None
+        else:
             try:
-                self.julia_backend.load_state(julia_state.get("state", {}))
+                native_handle.load_state(native_state.get("state", {}))
             except Exception as exc:
-                logger.warning(
-                    "Failed to load Julia boundary backend state; disabling backend",
-                    exc_info=True,
-                )
-                self.julia_backend = None
-        if compiled_state and self.compiled_backend is not None:
-            try:
-                self.compiled_backend.load_state(compiled_state.get("state", {}))
-            except Exception as exc:
-                logger.warning(
-                    "Failed to load compiled boundary backend state; disabling backend",
-                    exc_info=True,
-                )
-                self.compiled_backend = None
+                setattr(self, f"{fitted}_backend", None)
+                raise ValueError(f"Failed to restore fitted {fitted} boundary weights") from exc
 
     # ------------------------------------------------------------------
     # Evaluation and inference
     # ------------------------------------------------------------------
     def evaluate(self, sequences: Sequence[BoundarySequence]) -> Tuple[float, float]:
+        self._require_python_head()
         total_loss = 0.0
         total_tp = total_fp = total_fn = 0
         for seq in sequences:
@@ -1061,7 +1276,7 @@ class BoundaryStudent:
         precision = total_tp / (total_tp + total_fp + 1e-8)
         recall = total_tp / (total_tp + total_fn + 1e-8)
         f1 = 0.0 if precision + recall == 0 else 2 * precision * recall / (precision + recall)
-        return total_loss / max(1, len(sequences)), f1
+        return float(total_loss / max(1, len(sequences))), float(f1)
 
     def _boundary_confusion(self, preds: List[int], labels: List[int]) -> Tuple[int, int, int]:
         tp = fp = fn = 0
@@ -1104,8 +1319,11 @@ class BoundaryStudent:
         return out
 
     def boundary_probs(self, text: str) -> np.ndarray:
+        self._require_fitted_backend()
         fallbacks: List[str] = []
-        if self._context_ready():
+        if self._fitted_backend == "python" or (
+            self._fitted_backend is None and (self.lexical_buckets or self._context_ready())
+        ):
             if len(text) <= 1:
                 self._backend_metadata("python", fallbacks, stage="boundary_probs")
                 return np.zeros(0, dtype=float)
@@ -1116,24 +1334,28 @@ class BoundaryStudent:
             probs = [m[1] for m in marginals]
             self._backend_metadata("python", fallbacks, stage="boundary_probs")
             return np.array(probs, dtype=float)
-        if self.julia_backend is not None:
+        if self.julia_backend is not None and self._fitted_backend in (None, "julia"):
             try:
                 result = self.julia_backend.boundary_probs(text)
                 backend_id = f"julia:{self.julia_backend.device}"
                 self._backend_metadata(backend_id, fallbacks, stage="boundary_probs")
                 return result
             except Exception as exc:
+                if self._fitted_backend == "julia":
+                    raise RuntimeError("Fitted Julia boundary probability computation failed") from exc
                 backend_id = f"julia:{getattr(self.julia_backend, 'device', 'unknown')}"
                 fallbacks.append(backend_id)
                 _log_backend_exception("boundary_probs", backend_id, exc)
                 self.julia_backend = None
-        if self.compiled_backend is not None:
+        if self.compiled_backend is not None and self._fitted_backend in (None, "compiled"):
             try:
                 result = self.compiled_backend.boundary_probs(text)
                 backend_id = f"compiled:{self.compiled_backend.device}"
                 self._backend_metadata(backend_id, fallbacks, stage="boundary_probs")
                 return result
             except Exception as exc:
+                if self._fitted_backend == "compiled":
+                    raise RuntimeError("Fitted compiled boundary probability computation failed") from exc
                 backend_id = f"compiled:{getattr(self.compiled_backend, 'device', 'unknown')}"
                 fallbacks.append(backend_id)
                 _log_backend_exception("boundary_probs", backend_id, exc)
@@ -1150,13 +1372,24 @@ class BoundaryStudent:
         return np.array(probs, dtype=float)
 
     def _python_logits(self, text: str) -> List[float]:
+        self._require_python_head()
         if len(text) <= 1:
             return []
         seq = self.build_sequences([text], [[text]])[0]
         logits, _ = self._forward_sequence(seq)
         return [float(v) for v in logits]
 
-    def boundary_probs_with_logit_bias(self, text: str, logit_bias: float = 0.0) -> np.ndarray:
+    def _resolve_logits(self, text: str, logits: Optional[Sequence[float]]) -> List[float]:
+        self._require_python_head()
+        if logits is None:
+            return self._python_logits(text)
+        if len(logits) != max(0, len(text) - 1):
+            raise ValueError("logits must contain one score per character boundary")
+        return [float(value) for value in logits]
+
+    def boundary_probs_with_logit_bias(
+        self, text: str, logit_bias: float = 0.0, *, logits: Optional[Sequence[float]] = None
+    ) -> np.ndarray:
         """Return CRF marginals after applying a constant logit bias.
 
         This intentionally uses the pure-Python implementation (even if Julia/C++
@@ -1164,7 +1397,7 @@ class BoundaryStudent:
         shifts without requiring native backends to re-implement the knobs.
         """
 
-        logits = self._python_logits(text)
+        logits = self._resolve_logits(text, logits)
         if not logits:
             return np.zeros(0, dtype=float)
         bias = float(logit_bias)
@@ -1176,8 +1409,13 @@ class BoundaryStudent:
         return np.array(probs, dtype=float)
 
     def decode(self, text: str) -> Dict[str, object]:
+        self._require_fitted_backend()
         fallbacks: List[str] = []
-        if self._context_ready():
+        if not text:
+            return {"tokens": [], **self._backend_metadata("python", fallbacks, stage="decode")}
+        if self._fitted_backend == "python" or (
+            self._fitted_backend is None and (self.lexical_buckets or self._context_ready())
+        ):
             seq = self.build_sequences([text], [[text]])[0]
             logits, _ = self._forward_sequence(seq)
             labels = self._viterbi(logits)
@@ -1190,13 +1428,15 @@ class BoundaryStudent:
             tokens.append(text[start:])
             meta = self._backend_metadata("python", fallbacks, stage="decode")
             return {"tokens": tokens, **meta}
-        if self.julia_backend is not None:
+        if self.julia_backend is not None and self._fitted_backend in (None, "julia"):
             try:
                 tokens = list(self.julia_backend.decode(text))
                 backend_id = f"julia:{self.julia_backend.device}"
                 meta = self._backend_metadata(backend_id, fallbacks, stage="decode")
                 return {"tokens": tokens, **meta}
             except Exception as exc:
+                if self._fitted_backend == "julia":
+                    raise RuntimeError("Fitted Julia boundary decoding failed") from exc
                 backend_id = f"julia:{getattr(self.julia_backend, 'device', 'unknown')}"
                 fallbacks.append(backend_id)
                 logger.exception(
@@ -1204,13 +1444,15 @@ class BoundaryStudent:
                     extra={"backend": backend_id, "event": "boundary_backend_failure"},
                 )
                 self.julia_backend = None
-        if self.compiled_backend is not None:
+        if self.compiled_backend is not None and self._fitted_backend in (None, "compiled"):
             try:
                 tokens = list(self.compiled_backend.decode(text))
                 backend_id = f"compiled:{self.compiled_backend.device}"
                 meta = self._backend_metadata(backend_id, fallbacks, stage="decode")
                 return {"tokens": tokens, **meta}
             except Exception as exc:
+                if self._fitted_backend == "compiled":
+                    raise RuntimeError("Fitted compiled boundary decoding failed") from exc
                 backend_id = f"compiled:{getattr(self.compiled_backend, 'device', 'unknown')}"
                 fallbacks.append(backend_id)
                 logger.exception(
@@ -1231,7 +1473,9 @@ class BoundaryStudent:
         meta = self._backend_metadata("python", fallbacks)
         return {"tokens": tokens, **meta}
 
-    def decode_with_logit_bias(self, text: str, logit_bias: float = 0.0) -> Dict[str, object]:
+    def decode_with_logit_bias(
+        self, text: str, logit_bias: float = 0.0, *, logits: Optional[Sequence[float]] = None
+    ) -> Dict[str, object]:
         """Decode a segmentation with a constant logit bias applied.
 
         Like :meth:`boundary_probs_with_logit_bias`, this uses the pure-Python CRF
@@ -1239,7 +1483,12 @@ class BoundaryStudent:
         whether optional native backends are installed.
         """
 
-        logits = self._python_logits(text)
+        logits = self._resolve_logits(text, logits)
+        if not text:
+            return {
+                "tokens": [], "logit_bias": float(logit_bias),
+                **self._backend_metadata("python", [], stage="decode_with_logit_bias"),
+            }
         bias = float(logit_bias)
         logits = [val + bias for val in logits]
         labels = self._viterbi(logits)
