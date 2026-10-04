@@ -23,22 +23,19 @@ dependencies = [
 dynamic = ["version"]
 
 [project.urls]
-Homepage = "https://github.com/SpiralReality/SpiralReality-AIT"
-"Bug Tracker" = "https://github.com/SpiralReality/SpiralReality-AIT/issues"
+Homepage = "https://github.com/RyoSpiralArchitect/SpiralReality-AIT"
+"Bug Tracker" = "https://github.com/RyoSpiralArchitect/SpiralReality-AIT/issues"
 
 [tool.setuptools]
 package-dir = {"" = "."}
 
-[tool.setuptools.dynamic]
-version = {attr = "spiralreality_AIT_onepass_aifcore_integrated.integrated.__version__"}
-
 [tool.setuptools.packages.find]
-where = ["spiralreality_AIT_onepass_aifcore_integrated"]
-include = ["spiralreality_AIT_onepass_aifcore_integrated.integrated*"]
+where = ["."]
+include = ["spiralreality_AIT_onepass_aifcore_integrated*"]
+namespaces = false
 
 [tool.setuptools.package-data]
 "spiralreality_AIT_onepass_aifcore_integrated.integrated" = ["py.typed"]
 
 [tool.setuptools_scm]
 fallback_version = "0.0.1"
-
