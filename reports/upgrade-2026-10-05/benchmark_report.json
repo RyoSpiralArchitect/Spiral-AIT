@@ -1,0 +1,999 @@
+{
+  "schema_version": 2,
+  "runtime": {
+    "python": "3.12.6",
+    "numpy": "2.5.3",
+    "machine": "arm64",
+    "encoder_backend": "spectral-numpy:cpu"
+  },
+  "training_config": {
+    "lr": 0.05,
+    "epochs": 8,
+    "batch_size": 2,
+    "reg": 0.0001,
+    "crf_lr": 0.02,
+    "phase_lr": 0.3,
+    "encoder_lr": 0.002,
+    "hidden_dim": 20,
+    "emb_dim": 14,
+    "window": 2,
+    "validation_split": 0.25,
+    "patience": 3,
+    "dtype": "float32",
+    "max_grad_norm": 10.0,
+    "cache_sequences": false,
+    "shuffle_train": false,
+    "device_preference": "auto",
+    "use_encoder_context": true,
+    "context_lr": 0.02,
+    "context_hidden_dim": 32,
+    "lexical_buckets": 0,
+    "lexical_lr": 0.05
+  },
+  "dataset": {
+    "size": 33,
+    "languages": {
+      "de": 2,
+      "en": 21,
+      "es": 2,
+      "fr": 2,
+      "ja": 4,
+      "zh": 2
+    },
+    "test_languages": {
+      "de": 1,
+      "en": 5,
+      "es": 1,
+      "fr": 1,
+      "ja": 1,
+      "zh": 1
+    },
+    "split": {
+      "method": "seeded_exact_text_groups_language_balanced_cap_stratified_holdout_v1",
+      "seed": 5042,
+      "test_fraction": 0.25,
+      "max_samples": null,
+      "source_samples": 33,
+      "unique_samples": 33,
+      "duplicate_samples_removed": 0,
+      "source_manifest_sha256": "42bb733d0c71de35eb2e5bf710ecc4eccd568b991d97067fa1182996a39cc2f2",
+      "source_languages": {
+        "de": 2,
+        "en": 21,
+        "es": 2,
+        "fr": 2,
+        "ja": 4,
+        "zh": 2
+      },
+      "selected_samples": 33,
+      "omitted_languages": [],
+      "training_only_languages": [],
+      "train_pool": {
+        "samples": 23,
+        "languages": {
+          "de": 1,
+          "en": 16,
+          "es": 1,
+          "fr": 1,
+          "ja": 3,
+          "zh": 1
+        },
+        "text_sha256": [
+          "0b40ebc672e119e9398fd69c551930b73a5dd50b695142dc267c0cb350c2d85a",
+          "2aa0e52d2d9b1981aaae4e97ce0fec778d9aaf20ae0950b3d643d5d18c3293f9",
+          "3d99ce5ca71157f63270fdfca58eccf1ca51e19ca10124bd0b1c97b05d1c6461",
+          "42ddc766e35d78f2c53db399df4a338650cf43512534bfce8bf260d1d22f10a5",
+          "44041db5010aab24fb6e92cfde7a435ce3fa799f4d04a5740cd0a81cf18b7b42",
+          "5485b8e0496044cf53638de80f55c626e89841441678e65dcb5c403fb29557b8",
+          "5869fd009141dd2081a525c4f9e15a029e8849ee6c1374b07fa82da9fae95e7f",
+          "60466f77154a939cedbfa147ee27c57dae625d99afe46c29e821f3d41069d02c",
+          "63686cb7e6dddecd4b980fb8e6c87293712e9b43b8c2d7f2a494ffc58cb228b4",
+          "6d0d3eedd869e1860036967d2d3af0ca06bb80349c9896dd7480bd1522329e24",
+          "88f2fe50430cb68d3cf2b440126c567b2b600b019a8bc2cf3a0d17732f09aff9",
+          "98e3c5cf3763352fb03da6ef16956eb66f193acb7df1b4967235ffb8f79be244",
+          "af23327f94949ba6b645e0569d43341ce1eca14889fb3d323315a566442191f5",
+          "bacc037253b50fadc9443559d66e98ba45bc346dfa0addbb2c647254547c4197",
+          "bea3c2719e3bef0dd9d590f58e753038aa6cec70e9e7abe1640eca2bd095b0f8",
+          "c25e67e286fe818c597b35753e03384bb77a051e2b86c50d80d2f8915bf00a5f",
+          "cd2b1d0175abe3e56189a1171a651668cac6dae1df17b7d8138e2f18742eddd6",
+          "cf2a9278a90f8e96fb1ef740895cda1156be80cbdd83caf6b742f86c0a513e0a",
+          "d07e310735e1e033c8f04172fd0ff699dac622ba1f462e0dca8977ce80ba8a7c",
+          "d87a84b10b6cc9024807bf20425bf6aaee6b625670b72518aac236f2730ca9c1",
+          "f8bc7352ee06b7f58823eade919ff1b6f70a830247f2398d57ca702e2d3cb036",
+          "f93041a535dc290be98d53143dbe684c1aa26da1354ea17c1f0feff7c993a796",
+          "fdcfe21828b26b9065b031a039523641bcc7067af81ee582223450f670d48030"
+        ],
+        "manifest_sha256": "7b2b16688ffbb74633750be9b7d17ac22486cac58d6f88ed695897bed256a281"
+      },
+      "test": {
+        "samples": 10,
+        "languages": {
+          "de": 1,
+          "en": 5,
+          "es": 1,
+          "fr": 1,
+          "ja": 1,
+          "zh": 1
+        },
+        "text_sha256": [
+          "019be82b12053bef871094b03af32c43ae157b1fb3ffb385c6007007bd1a0278",
+          "654448f108a5d91ced9d7c9fb2da79ca793cb72edde3eb08572eed543f8a59f7",
+          "66281b550dafb8ef0bc37228658e219680c57dcf7817f6ac2321287f45226187",
+          "7f2fba350a67b9a3202d08da1f250055b06fb16233c2788982a101001fd2394a",
+          "8fd6118738b74d591cc8e3148472054621db98a8fbe660050346b46178675f2a",
+          "abef157d711c8df06731c6005165d75dd58b2f8a6fb05ee55fbd8e84c568f1b8",
+          "b81939849f0f30f5d8391954db85438eae342e8f946831c441e825f5a311fedb",
+          "d38b22155889e1d4c1172e2d5723ace83768b67141d50fc8bd7128e678f35d2e",
+          "f2f5fc23a382683e5542535b8e60ecbf8dc3185cebe0f9a12076da6ac5e5743e",
+          "fbbc20383f09593d84ac973c06a2eb5d289cef0556bd57bacfb2fd57cd351ede"
+        ],
+        "manifest_sha256": "337dfd41bb7d022877149b2792ba18dd82ca04b018d271928fdf6e8ff1094be0"
+      },
+      "disjoint_text_hashes": true,
+      "internal_validation": "Created only from train_pool; never from the held-out test partition.",
+      "duplicate_policy": "Exact text duplicates collapsed; conflicting labels/tags rejected; near-duplicates are not detected."
+    },
+    "label_source": "repository-curated teacher segmentations",
+    "scope": "Small synthetic corpus; no external-corpus generalization claim.",
+    "license": {
+      "id": "CC-BY-4.0",
+      "name": "Creative Commons Attribution 4.0 International",
+      "url": "https://creativecommons.org/licenses/by/4.0/",
+      "attribution": "SpiralReality AIT authors",
+      "notes": "Synthetic reflective and multilingual narratives curated for the SpiralReality one-pass AIT demo. The texts were authored for this repository and may be redistributed under CC-BY-4.0."
+    },
+    "catalog": {
+      "license": {
+        "id": "CC-BY-4.0",
+        "name": "Creative Commons Attribution 4.0 International",
+        "url": "https://creativecommons.org/licenses/by/4.0/",
+        "attribution": "SpiralReality AIT authors",
+        "notes": "Synthetic reflective and multilingual narratives curated for the SpiralReality one-pass AIT demo. The texts were authored for this repository and may be redistributed under CC-BY-4.0."
+      },
+      "languages": {
+        "de": {
+          "count": 2,
+          "groups": [
+            "multilingual"
+          ],
+          "examples": [
+            "Grenzsignale stabilisieren den Plan auch bei mehrsprachigen Dialogen.",
+            "Ein lernbarer Phasenfilter verstärkt Übergänge mit geringer Latenz."
+          ]
+        },
+        "en": {
+          "count": 21,
+          "groups": [
+            "reflective"
+          ],
+          "examples": [
+            "Bob re-examined Carol's motives and updated his provisional evaluation.",
+            "Avoid premature closure; maintain hypotheses and update them with evidence."
+          ]
+        },
+        "es": {
+          "count": 2,
+          "groups": [
+            "multilingual"
+          ],
+          "examples": [
+            "La analista rastrea señales multilingües para ajustar los límites narrativos.",
+            "Modelos ligeros permiten entrenamiento estable sin depender de GPU."
+          ]
+        },
+        "fr": {
+          "count": 2,
+          "groups": [
+            "multilingual"
+          ],
+          "examples": [
+            "Les frontières apprises restent fiables même lorsque la langue change.",
+            "Un encodeur de phase affine les indices locaux pour guider la planification."
+          ]
+        },
+        "ja": {
+          "count": 4,
+          "groups": [
+            "multilingual",
+            "reflective"
+          ],
+          "examples": [
+            "ボブはキャロルの動機を再検討し、第三者の証拠で暫定評価を更新した。",
+            "結論を急ぎ過ぎないこと。内部対話で仮説を維持し、証拠で更新する。"
+          ]
+        },
+        "zh": {
+          "count": 2,
+          "groups": [
+            "multilingual"
+          ],
+          "examples": [
+            "边界学生在多语言案例中保持高精度的分段预测。",
+            "相位编码帮助注意力在跨域文本上快速适应。"
+          ]
+        }
+      },
+      "total_samples": 33
+    }
+  },
+  "baseline": {
+    "evaluation_partition": "held_out_test",
+    "samples": 10,
+    "f1": 0.9038974335267241,
+    "per_text": {
+      "Cross-lingual glossaries ensure the encoder does not conflate idioms with hard stops.": 1.0,
+      "Socratic prompts elicit clarifications that re-open segments closed by cognitive fatigue.": 0.96,
+      "Un encodeur de phase affine les indices locaux pour guider la planification.": 0.9565217391304348,
+      "Grenzsignale stabilisieren den Plan auch bei mehrsprachigen Dialogen.": 1.0,
+      "位相基底を共有すると変化点の感度が高まる。": 0.5454545454545454,
+      "Noise-robust embeddings resist the temptation to snap to the majority class boundary.": 0.9629629629629629,
+      "Iterative reframing of witness notes keeps latent clusters responsive to nuance.": 1.0,
+      "边界学生在多语言案例中保持高精度的分段预测。": 0.6666666666666666,
+      "Systematic journaling of counterfactuals stabilizes the agent's decision frontier.": 0.9473684210526315,
+      "La analista rastrea señales multilingües para ajustar los límites narrativos.": 1.0
+    },
+    "per_language": {
+      "de": {
+        "samples": 1,
+        "f1": 1.0
+      },
+      "en": {
+        "samples": 5,
+        "f1": 0.9740662768031189
+      },
+      "es": {
+        "samples": 1,
+        "f1": 1.0
+      },
+      "fr": {
+        "samples": 1,
+        "f1": 0.9565217391304348
+      },
+      "ja": {
+        "samples": 1,
+        "f1": 0.5454545454545454
+      },
+      "zh": {
+        "samples": 1,
+        "f1": 0.6666666666666666
+      }
+    },
+    "latency_ms": {
+      "samples": 30,
+      "mean": 11.166586066246964,
+      "p95": 14.704483149398584,
+      "max": 15.945540999382501
+    }
+  },
+  "reference_baselines": {
+    "whitespace_punctuation": {
+      "evaluation_partition": "held_out_test",
+      "f1": 0.8111305361305361,
+      "per_text": {
+        "Cross-lingual glossaries ensure the encoder does not conflate idioms with hard stops.": 0.9230769230769231,
+        "Socratic prompts elicit clarifications that re-open segments closed by cognitive fatigue.": 0.9166666666666666,
+        "Un encodeur de phase affine les indices locaux pour guider la planification.": 1.0,
+        "Grenzsignale stabilisieren den Plan auch bei mehrsprachigen Dialogen.": 1.0,
+        "位相基底を共有すると変化点の感度が高まる。": 0.18181818181818182,
+        "Noise-robust embeddings resist the temptation to snap to the majority class boundary.": 0.9230769230769231,
+        "Iterative reframing of witness notes keeps latent clusters responsive to nuance.": 1.0,
+        "边界学生在多语言案例中保持高精度的分段预测。": 0.16666666666666666,
+        "Systematic journaling of counterfactuals stabilizes the agent's decision frontier.": 1.0,
+        "La analista rastrea señales multilingües para ajustar los límites narrativos.": 1.0
+      },
+      "description": "Text-covering whitespace/punctuation rule, with no curated-label lookup."
+    }
+  },
+  "training": {
+    "evaluation_partition": "training_pool_internal_validation",
+    "internal_validation_fraction": 0.25,
+    "summary": {
+      "train_sequences": 17,
+      "train_indices": [
+        0,
+        1,
+        2,
+        4,
+        5,
+        6,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14,
+        17,
+        18,
+        19,
+        20,
+        22
+      ],
+      "validation_indices": [
+        3,
+        7,
+        8,
+        15,
+        16,
+        21
+      ],
+      "history": [
+        {
+          "epoch": 1.0,
+          "train_loss": 30.705512033632225,
+          "val_loss": 20.32273965148116,
+          "val_f1": 0.7476635512621189
+        },
+        {
+          "epoch": 2.0,
+          "train_loss": 22.391117864051104,
+          "val_loss": 17.10431934149521,
+          "val_f1": 0.8235294116262976
+        },
+        {
+          "epoch": 3.0,
+          "train_loss": 20.39435659334524,
+          "val_loss": 14.641531146052147,
+          "val_f1": 0.8305084744355071
+        },
+        {
+          "epoch": 4.0,
+          "train_loss": 18.041520373523646,
+          "val_loss": 12.37800051276466,
+          "val_f1": 0.8571428569987996
+        },
+        {
+          "epoch": 5.0,
+          "train_loss": 15.50964217664874,
+          "val_loss": 10.163116748421741,
+          "val_f1": 0.9119999998540801
+        },
+        {
+          "epoch": 6.0,
+          "train_loss": 13.214354919647159,
+          "val_loss": 7.658928362226288,
+          "val_f1": 0.9206349204887883
+        },
+        {
+          "epoch": 7.0,
+          "train_loss": 11.180325409601553,
+          "val_loss": 5.047648113221388,
+          "val_f1": 0.9457364339619014
+        },
+        {
+          "epoch": 8.0,
+          "train_loss": 9.354396986644556,
+          "val_loss": 3.024555152156573,
+          "val_f1": 0.9531249998510744
+        }
+      ],
+      "train_tokens": 1163,
+      "train_seconds": 2.6279445000000123,
+      "tokens_per_second": 3540.4096243280464,
+      "processed_train_tokens": 9304,
+      "epochs_completed": 8,
+      "best_epoch": 8,
+      "backend": "numpy",
+      "dtype": "float32",
+      "cache_sequences": false,
+      "shuffle_train": false,
+      "cached_sequences": 0,
+      "available_devices": {
+        "python": [
+          "cpu"
+        ],
+        "encoder": [
+          "cpu"
+        ]
+      },
+      "device_preference": "auto",
+      "lexical_buckets": 0,
+      "lexical_lr": 0.05,
+      "backend_used": "numpy",
+      "val_sequences": 6,
+      "val_tokens": 487,
+      "val_loss": 3.024555152156573,
+      "val_f1": 0.9531249998510744,
+      "dataset_size": 23,
+      "dataset_tags": [
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom",
+        "custom"
+      ],
+      "dataset_languages": {
+        "custom": 23
+      },
+      "dataset_language_stats": {
+        "custom": {
+          "count": 23.0,
+          "mean_chars": 71.73913043478261,
+          "mean_tokens": 12.826086956521738,
+          "mean_chars_per_token": 5.806873383418005
+        }
+      },
+      "dataset_texts": [
+        "境界判定モデルは多言語入力でも一貫して学習される。",
+        "結論を急ぎ過ぎないこと。内部対話で仮説を維持し、証拠で更新する。",
+        "Les frontières apprises restent fiables même lorsque la langue change.",
+        "Avoid premature closure; maintain hypotheses and update them with evidence.",
+        "相位编码帮助注意力在跨域文本上快速适应。",
+        "Meta-analysis of sensor feeds prevents overfitting to the first plausible story.",
+        "Async peer review catches overconfident merges in multilingual investigative reports.",
+        "Streaming diagnostics reveal when the CRF head saturates and needs regularization.",
+        "Calibrating priors against delayed confirmations avoids premature pruning of actions.",
+        "Sustained reflective questioning keeps the analyst from freezing the latent plan too soon.",
+        "Slow breathing, careful parsing, then align evidence with provisional policies.",
+        "Modelos ligeros permiten entrenamiento estable sin depender de GPU.",
+        "Manual audits of auto-segmented transcripts surface drift before metrics collapse.",
+        "Maintain a rolling scratchpad; revise boundaries when fresh observations contradict assumptions.",
+        "Align observations, plans, and critiques; triangulated narratives yield resilient cuts.",
+        "Temporal coherence checks highlight when the boundary signal lags the discourse flow.",
+        "Bob re-examined Carol's motives and updated his provisional evaluation.",
+        "ボブはキャロルの動機を再検討し、第三者の証拠で暫定評価を更新した。",
+        "Ein lernbarer Phasenfilter verstärkt Übergänge mit geringer Latenz.",
+        "Phase-aware masking prevents the planner from extrapolating on stale latent states.",
+        "Contingency-aware sampling lets the bridge respect rare but critical micro-boundaries.",
+        "Goal-conditioned rehearsal simulates failure cases before committing to gating decisions.",
+        "Layered attention summaries discourage impulsive segmentation during cold starts."
+      ],
+      "dataset_segments": [
+        [
+          "境界",
+          "判定",
+          "モデル",
+          "は",
+          "多言語",
+          "入力",
+          "でも",
+          "一貫",
+          "して",
+          "学習",
+          "される",
+          "。"
+        ],
+        [
+          "結論",
+          "を",
+          "急ぎ過ぎ",
+          "ない",
+          "こと",
+          "。",
+          "内部",
+          "対話",
+          "で",
+          "仮説",
+          "を",
+          "維持",
+          "し",
+          "、",
+          "証拠",
+          "で",
+          "更新",
+          "する",
+          "。"
+        ],
+        [
+          "Les ",
+          "frontières ",
+          "apprises ",
+          "restent ",
+          "fiables ",
+          "même ",
+          "lorsque ",
+          "la ",
+          "langue ",
+          "change",
+          "."
+        ],
+        [
+          "Avoid ",
+          "premature ",
+          "closure",
+          "; ",
+          "maintain ",
+          "hypotheses ",
+          "and ",
+          "update ",
+          "them ",
+          "with ",
+          "evidence",
+          "."
+        ],
+        [
+          "相位",
+          "编码",
+          "帮助",
+          "注意力",
+          "在",
+          "跨域",
+          "文本",
+          "上",
+          "快速",
+          "适应",
+          "。"
+        ],
+        [
+          "Meta",
+          "-",
+          "analysis ",
+          "of ",
+          "sensor ",
+          "feeds ",
+          "prevents ",
+          "overfitting ",
+          "to ",
+          "the ",
+          "first ",
+          "plausible ",
+          "story",
+          "."
+        ],
+        [
+          "Async ",
+          "peer ",
+          "review ",
+          "catches ",
+          "overconfident ",
+          "merges ",
+          "in ",
+          "multilingual ",
+          "investigative ",
+          "reports",
+          "."
+        ],
+        [
+          "Streaming ",
+          "diagnostics ",
+          "reveal ",
+          "when ",
+          "the ",
+          "CRF ",
+          "head ",
+          "saturates ",
+          "and ",
+          "needs ",
+          "regularization",
+          "."
+        ],
+        [
+          "Calibrating ",
+          "priors ",
+          "against ",
+          "delayed ",
+          "confirmations ",
+          "avoids ",
+          "premature ",
+          "pruning ",
+          "of ",
+          "actions",
+          "."
+        ],
+        [
+          "Sustained ",
+          "reflective ",
+          "questioning ",
+          "keeps ",
+          "the ",
+          "analyst ",
+          "from ",
+          "freezing ",
+          "the ",
+          "latent ",
+          "plan ",
+          "too ",
+          "soon",
+          "."
+        ],
+        [
+          "Slow ",
+          "breathing",
+          ", ",
+          "careful ",
+          "parsing",
+          ", ",
+          "then ",
+          "align ",
+          "evidence ",
+          "with ",
+          "provisional ",
+          "policies",
+          "."
+        ],
+        [
+          "Modelos ",
+          "ligeros ",
+          "permiten ",
+          "entrenamiento ",
+          "estable ",
+          "sin ",
+          "depender ",
+          "de ",
+          "GPU",
+          "."
+        ],
+        [
+          "Manual ",
+          "audits ",
+          "of ",
+          "auto",
+          "-",
+          "segmented ",
+          "transcripts ",
+          "surface ",
+          "drift ",
+          "before ",
+          "metrics ",
+          "collapse",
+          "."
+        ],
+        [
+          "Maintain ",
+          "a ",
+          "rolling ",
+          "scratchpad",
+          "; ",
+          "revise ",
+          "boundaries ",
+          "when ",
+          "fresh ",
+          "observations ",
+          "contradict ",
+          "assumptions",
+          "."
+        ],
+        [
+          "Align ",
+          "observations",
+          ", ",
+          "plans",
+          ", ",
+          "and ",
+          "critiques",
+          "; ",
+          "triangulated ",
+          "narratives ",
+          "yield ",
+          "resilient ",
+          "cuts",
+          "."
+        ],
+        [
+          "Temporal ",
+          "coherence ",
+          "checks ",
+          "highlight ",
+          "when ",
+          "the ",
+          "boundary ",
+          "signal ",
+          "lags ",
+          "the ",
+          "discourse ",
+          "flow",
+          "."
+        ],
+        [
+          "Bob ",
+          "re",
+          "-",
+          "examined ",
+          "Carol's ",
+          "motives ",
+          "and ",
+          "updated ",
+          "his ",
+          "provisional ",
+          "evaluation",
+          "."
+        ],
+        [
+          "ボブ",
+          "は",
+          "キャロル",
+          "の",
+          "動機",
+          "を",
+          "再検討",
+          "し",
+          "、",
+          "第三者",
+          "の",
+          "証拠",
+          "で",
+          "暫定",
+          "評価",
+          "を",
+          "更新",
+          "した",
+          "。"
+        ],
+        [
+          "Ein ",
+          "lernbarer ",
+          "Phasenfilter ",
+          "verstärkt ",
+          "Übergänge ",
+          "mit ",
+          "geringer ",
+          "Latenz",
+          "."
+        ],
+        [
+          "Phase",
+          "-",
+          "aware ",
+          "masking ",
+          "prevents ",
+          "the ",
+          "planner ",
+          "from ",
+          "extrapolating ",
+          "on ",
+          "stale ",
+          "latent ",
+          "states",
+          "."
+        ],
+        [
+          "Contingency",
+          "-",
+          "aware ",
+          "sampling ",
+          "lets ",
+          "the ",
+          "bridge ",
+          "respect ",
+          "rare ",
+          "but ",
+          "critical ",
+          "micro",
+          "-",
+          "boundaries",
+          "."
+        ],
+        [
+          "Goal",
+          "-",
+          "conditioned ",
+          "rehearsal ",
+          "simulates ",
+          "failure ",
+          "cases ",
+          "before ",
+          "committing ",
+          "to ",
+          "gating ",
+          "decisions",
+          "."
+        ],
+        [
+          "Layered ",
+          "attention ",
+          "summaries ",
+          "discourage ",
+          "impulsive ",
+          "segmentation ",
+          "during ",
+          "cold ",
+          "starts",
+          "."
+        ]
+      ],
+      "encoder_backend": "spectral-numpy:cpu",
+      "encoder_devices": [
+        "cpu"
+      ]
+    },
+    "train": {
+      "samples": 17,
+      "text_sha256": [
+        "0b40ebc672e119e9398fd69c551930b73a5dd50b695142dc267c0cb350c2d85a",
+        "42ddc766e35d78f2c53db399df4a338650cf43512534bfce8bf260d1d22f10a5",
+        "44041db5010aab24fb6e92cfde7a435ce3fa799f4d04a5740cd0a81cf18b7b42",
+        "5485b8e0496044cf53638de80f55c626e89841441678e65dcb5c403fb29557b8",
+        "5869fd009141dd2081a525c4f9e15a029e8849ee6c1374b07fa82da9fae95e7f",
+        "60466f77154a939cedbfa147ee27c57dae625d99afe46c29e821f3d41069d02c",
+        "63686cb7e6dddecd4b980fb8e6c87293712e9b43b8c2d7f2a494ffc58cb228b4",
+        "88f2fe50430cb68d3cf2b440126c567b2b600b019a8bc2cf3a0d17732f09aff9",
+        "98e3c5cf3763352fb03da6ef16956eb66f193acb7df1b4967235ffb8f79be244",
+        "af23327f94949ba6b645e0569d43341ce1eca14889fb3d323315a566442191f5",
+        "bacc037253b50fadc9443559d66e98ba45bc346dfa0addbb2c647254547c4197",
+        "bea3c2719e3bef0dd9d590f58e753038aa6cec70e9e7abe1640eca2bd095b0f8",
+        "c25e67e286fe818c597b35753e03384bb77a051e2b86c50d80d2f8915bf00a5f",
+        "cf2a9278a90f8e96fb1ef740895cda1156be80cbdd83caf6b742f86c0a513e0a",
+        "d87a84b10b6cc9024807bf20425bf6aaee6b625670b72518aac236f2730ca9c1",
+        "f93041a535dc290be98d53143dbe684c1aa26da1354ea17c1f0feff7c993a796",
+        "fdcfe21828b26b9065b031a039523641bcc7067af81ee582223450f670d48030"
+      ],
+      "languages": {
+        "de": 1,
+        "en": 10,
+        "es": 1,
+        "fr": 1,
+        "ja": 3,
+        "zh": 1
+      }
+    },
+    "validation": {
+      "samples": 6,
+      "text_sha256": [
+        "2aa0e52d2d9b1981aaae4e97ce0fec778d9aaf20ae0950b3d643d5d18c3293f9",
+        "3d99ce5ca71157f63270fdfca58eccf1ca51e19ca10124bd0b1c97b05d1c6461",
+        "6d0d3eedd869e1860036967d2d3af0ca06bb80349c9896dd7480bd1522329e24",
+        "cd2b1d0175abe3e56189a1171a651668cac6dae1df17b7d8138e2f18742eddd6",
+        "d07e310735e1e033c8f04172fd0ff699dac622ba1f462e0dca8977ce80ba8a7c",
+        "f8bc7352ee06b7f58823eade919ff1b6f70a830247f2398d57ca702e2d3cb036"
+      ],
+      "languages": {
+        "en": 6
+      }
+    }
+  },
+  "protocol": {
+    "score_partition": "held_out_test",
+    "variant_source_partition": "held_out_test",
+    "variant_training_collisions_excluded": {},
+    "ablation_kind": "inference_ablation",
+    "ablation_note": "Context and AIF are toggled at inference on one trained student; this is not a separately retrained architecture comparison.",
+    "teacher_note": "Curated teacher segments define the gold labels; teacher lookup is not an independent baseline.",
+    "latency_note": "Encode cache is cleared before each baseline latency sample; ablation latency is descriptive and not a controlled speed comparison."
+  },
+  "ablations": {
+    "context_on_aif_off": {
+      "evaluation_partition": "held_out_test",
+      "kind": "inference_ablation",
+      "retrained": false,
+      "mean_f1": 0.9038974335267241,
+      "per_text": {
+        "Cross-lingual glossaries ensure the encoder does not conflate idioms with hard stops.": 1.0,
+        "Socratic prompts elicit clarifications that re-open segments closed by cognitive fatigue.": 0.96,
+        "Un encodeur de phase affine les indices locaux pour guider la planification.": 0.9565217391304348,
+        "Grenzsignale stabilisieren den Plan auch bei mehrsprachigen Dialogen.": 1.0,
+        "位相基底を共有すると変化点の感度が高まる。": 0.5454545454545454,
+        "Noise-robust embeddings resist the temptation to snap to the majority class boundary.": 0.9629629629629629,
+        "Iterative reframing of witness notes keeps latent clusters responsive to nuance.": 1.0,
+        "边界学生在多语言案例中保持高精度的分段预测。": 0.6666666666666666,
+        "Systematic journaling of counterfactuals stabilizes the agent's decision frontier.": 0.9473684210526315,
+        "La analista rastrea señales multilingües para ajustar los límites narrativos.": 1.0
+      },
+      "segment_latency_ms": {
+        "samples": 10,
+        "mean": 7.084216699877288,
+        "p95": 8.887304347990721,
+        "max": 9.128916997724446
+      }
+    },
+    "context_on_aif_on": {
+      "evaluation_partition": "held_out_test",
+      "kind": "inference_ablation",
+      "retrained": false,
+      "mean_f1": 0.8972307668600574,
+      "per_text": {
+        "Cross-lingual glossaries ensure the encoder does not conflate idioms with hard stops.": 1.0,
+        "Socratic prompts elicit clarifications that re-open segments closed by cognitive fatigue.": 0.96,
+        "Un encodeur de phase affine les indices locaux pour guider la planification.": 0.9565217391304348,
+        "Grenzsignale stabilisieren den Plan auch bei mehrsprachigen Dialogen.": 0.9333333333333333,
+        "位相基底を共有すると変化点の感度が高まる。": 0.5454545454545454,
+        "Noise-robust embeddings resist the temptation to snap to the majority class boundary.": 0.9629629629629629,
+        "Iterative reframing of witness notes keeps latent clusters responsive to nuance.": 1.0,
+        "边界学生在多语言案例中保持高精度的分段预测。": 0.6666666666666666,
+        "Systematic journaling of counterfactuals stabilizes the agent's decision frontier.": 0.9473684210526315,
+        "La analista rastrea señales multilingües para ajustar los límites narrativos.": 1.0
+      },
+      "segment_latency_ms": {
+        "samples": 10,
+        "mean": 8.032174899926758,
+        "p95": 9.8339747000864,
+        "max": 10.074875001009787
+      },
+      "policy_hist": {
+        "SeekEvidence": 10
+      }
+    },
+    "context_off_aif_off": {
+      "evaluation_partition": "held_out_test",
+      "kind": "inference_ablation",
+      "retrained": false,
+      "mean_f1": 0.8571985852311939,
+      "per_text": {
+        "Cross-lingual glossaries ensure the encoder does not conflate idioms with hard stops.": 0.8333333333333334,
+        "Socratic prompts elicit clarifications that re-open segments closed by cognitive fatigue.": 0.8695652173913043,
+        "Un encodeur de phase affine les indices locaux pour guider la planification.": 1.0,
+        "Grenzsignale stabilisieren den Plan auch bei mehrsprachigen Dialogen.": 0.8571428571428571,
+        "位相基底を共有すると変化点の感度が高まる。": 0.6666666666666666,
+        "Noise-robust embeddings resist the temptation to snap to the majority class boundary.": 0.88,
+        "Iterative reframing of witness notes keeps latent clusters responsive to nuance.": 1.0,
+        "边界学生在多语言案例中保持高精度的分段预测。": 0.6875,
+        "Systematic journaling of counterfactuals stabilizes the agent's decision frontier.": 0.8888888888888888,
+        "La analista rastrea señales multilingües para ajustar los límites narrativos.": 0.8888888888888888
+      },
+      "segment_latency_ms": {
+        "samples": 10,
+        "mean": 1.4991000007285038,
+        "p95": 1.8382810996627086,
+        "max": 1.8454999990353826
+      }
+    },
+    "context_off_aif_on": {
+      "evaluation_partition": "held_out_test",
+      "kind": "inference_ablation",
+      "retrained": false,
+      "mean_f1": 0.8463148114318191,
+      "per_text": {
+        "Cross-lingual glossaries ensure the encoder does not conflate idioms with hard stops.": 0.8333333333333334,
+        "Socratic prompts elicit clarifications that re-open segments closed by cognitive fatigue.": 0.8695652173913043,
+        "Un encodeur de phase affine les indices locaux pour guider la planification.": 0.9565217391304348,
+        "Grenzsignale stabilisieren den Plan auch bei mehrsprachigen Dialogen.": 0.8571428571428571,
+        "位相基底を共有すると変化点の感度が高まる。": 0.6666666666666666,
+        "Noise-robust embeddings resist the temptation to snap to the majority class boundary.": 0.88,
+        "Iterative reframing of witness notes keeps latent clusters responsive to nuance.": 1.0,
+        "边界学生在多语言案例中保持高精度的分段预测。": 0.6875,
+        "Systematic journaling of counterfactuals stabilizes the agent's decision frontier.": 0.8235294117647058,
+        "La analista rastrea señales multilingües para ajustar los límites narrativos.": 0.8888888888888888
+      },
+      "segment_latency_ms": {
+        "samples": 10,
+        "mean": 2.6385791006759973,
+        "p95": 3.3460043514423887,
+        "max": 3.462292002950562
+      },
+      "policy_hist": {
+        "SeekEvidence": 10
+      }
+    }
+  },
+  "variants": {
+    "noise": {
+      "mean_f1": 0.9038974335267241,
+      "mean_degradation": 0.0,
+      "samples": 10,
+      "changed_samples": 4,
+      "excluded_training_collisions": 0
+    },
+    "dialect": {
+      "mean_f1": 0.9071072124756335,
+      "mean_degradation": 0.008333333333333326,
+      "samples": 10,
+      "changed_samples": 5,
+      "excluded_training_collisions": 0
+    },
+    "tempo_slow": {
+      "mean_f1": 0.8949710266003172,
+      "mean_degradation": 0.015571428571428556,
+      "samples": 10,
+      "changed_samples": 10,
+      "excluded_training_collisions": 0
+    },
+    "tempo_fast": {
+      "mean_f1": 0.8889542422151118,
+      "mean_degradation": 0.015448633156966495,
+      "samples": 10,
+      "changed_samples": 8,
+      "excluded_training_collisions": 0
+    }
+  },
+  "np_stub": {
+    "available": true,
+    "linf": 0.0,
+    "mse": 0.0
+  }
+}

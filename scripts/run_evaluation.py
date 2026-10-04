@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import math
 import random
@@ -18,37 +19,16 @@ REPO_ROOT = Path(__file__).resolve().parent.parent
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from spiralreality_AIT_onepass_aifcore_integrated.integrated.corpus import (
-    TRAIN_TEXTS,
-    teacher_segments,
+from spiralreality_AIT_onepass_aifcore_integrated.integrated.benchmark import (
+    load_benchmark_split,
+    segmentation_f1,
+    training_report,
 )
 from spiralreality_AIT_onepass_aifcore_integrated.integrated.onepass_ait import (
     GateDiagnostics,
     OnePassAIT,
     StudentTrainingConfig,
 )
-
-
-def segmentation_f1(text: str, gold_segments: Sequence[str], predicted_segments: Sequence[str]) -> float:
-    """Compute character boundary F1 given gold and predicted segmentations."""
-
-    def cuts(segments: Sequence[str]) -> set[int]:
-        idx = 0
-        out: set[int] = set()
-        for tok in segments:
-            idx += len(tok)
-            out.add(idx)
-        out.discard(len(text))
-        return out
-
-    gold = cuts(gold_segments)
-    pred = cuts(predicted_segments)
-    tp = len(gold & pred)
-    fp = len(pred - gold)
-    fn = len(gold - pred)
-    precision = tp / (tp + fp + 1e-8)
-    recall = tp / (tp + fn + 1e-8)
-    return 0.0 if precision + recall == 0 else 2 * precision * recall / (precision + recall)
 
 
 def _segment_lengths(segments: Sequence[str]) -> List[int]:
@@ -71,11 +51,8 @@ def _perturb_text(text: str, noise_level: float, rng: random.Random) -> str:
     """Return a perturbed version of *text* without changing its length."""
 
     def flip_case(ch: str) -> str:
-        if ch.islower():
-            return ch.upper()
-        if ch.isupper():
-            return ch.lower()
-        return ch
+        flipped = ch.swapcase()
+        return flipped if len(flipped) == 1 else ch
 
     glyphs = [
         "~",
@@ -92,10 +69,10 @@ def _perturb_text(text: str, noise_level: float, rng: random.Random) -> str:
             out_chars.append(ch)
             continue
         if rng.random() > noise_level:
-            if rng.random() < 0.5:
-                out_chars.append(flip_case(ch))
-            else:
-                out_chars.append(ch)
+            out_chars.append(ch)
+            continue
+        if rng.random() < 0.5:
+            out_chars.append(flip_case(ch))
             continue
         replacement = rng.choice(glyphs)
         if len(replacement) != 1:
@@ -105,6 +82,7 @@ def _perturb_text(text: str, noise_level: float, rng: random.Random) -> str:
 
 
 def _collect_gate_diagnostics(ait: OnePassAIT, text: str) -> Dict[str, float]:
+    ait.encode(text)
     diagnostics: GateDiagnostics = ait.gate_diagnostics()
     attention = diagnostics.attention_strength if diagnostics.attention_strength else []
     attn_mean = float(sum(attention) / len(attention)) if attention else 0.0
@@ -126,7 +104,17 @@ def run_evaluation(
     robustness_trials: int,
     robustness_noise: float,
     seed: int,
+    max_samples: int | None = None,
+    test_fraction: float = 0.25,
+    languages: Sequence[str] | None = None,
 ) -> Dict[str, object]:
+    if latency_runs < 1 or robustness_trials < 1:
+        raise ValueError("latency_runs and robustness_trials must be positive")
+    if not 0.0 <= robustness_noise <= 1.0:
+        raise ValueError("robustness_noise must be between zero and one")
+    split = load_benchmark_split(
+        languages=languages, max_samples=max_samples, test_fraction=test_fraction, seed=seed,
+    )
     output_dir.mkdir(parents=True, exist_ok=True)
 
     ait = OnePassAIT(latent_dim=32, seed=seed)
@@ -134,7 +122,7 @@ def run_evaluation(
         lr=0.05,
         epochs=16,
         batch_size=2,
-        validation_split=0.4,
+        validation_split=0.25 if len(split.train_texts) > 1 else 0.0,
         patience=4,
         hidden_dim=20,
         emb_dim=14,
@@ -144,15 +132,15 @@ def run_evaluation(
         shuffle_train=True,
     )
 
-    texts = TRAIN_TEXTS[:4]
-    segments = teacher_segments(texts)
-    summary = ait.train_student(texts, segments, cfg=cfg)
+    texts, segments = split.test_texts, split.test_segments
+    summary = ait.train_student(split.train_texts, split.train_segments, cfg=cfg)
+    train_info = training_report(split, summary, cfg.validation_split)
 
     per_sample: List[Dict[str, object]] = []
     lengths_cache = [_segment_lengths(seg) for seg in segments]
     f1_scores: List[float] = []
 
-    for text, gold_segments, lengths in zip(texts, segments, lengths_cache):
+    for text, gold_segments, language in zip(texts, segments, split.test_languages):
         predicted_result = ait.student.decode(text)
         predicted = (
             predicted_result["tokens"]
@@ -163,6 +151,7 @@ def run_evaluation(
         per_sample.append(
             {
                 "text": text,
+                "language": language,
                 "f1": f1,
                 "gold_segments": gold_segments,
                 "predicted_segments": predicted,
@@ -171,19 +160,27 @@ def run_evaluation(
         f1_scores.append(f1)
 
     latency_prompt = " ".join(texts[:2])
-    start = time.perf_counter()
+    latency_samples: List[float] = []
     for _ in range(latency_runs):
+        ait._encode_cache.pop(latency_prompt, None)
+        start = time.perf_counter()
         ait.encode(latency_prompt)
-    latency = (time.perf_counter() - start) / max(1, latency_runs)
+        latency_samples.append(time.perf_counter() - start)
+    latency = statistics.mean(latency_samples)
 
     rng = random.Random(seed + 42)
     robustness_records: List[Dict[str, object]] = []
     mean_robustness_per_text: List[Tuple[str, float]] = []
+    training_texts = set(split.train_texts)
+    excluded_training_collisions = 0
 
     for text, gold_segments, lengths in zip(texts, segments, lengths_cache):
         per_text_scores: List[float] = []
         for trial in range(robustness_trials):
             noisy_text = _perturb_text(text, robustness_noise, rng)
+            if noisy_text in training_texts:
+                excluded_training_collisions += 1
+                continue
             projected_gold = _segments_from_lengths(noisy_text, lengths)
             predicted_result = ait.student.decode(noisy_text)
             predicted = (
@@ -201,6 +198,8 @@ def run_evaluation(
                 }
             )
             per_text_scores.append(score)
+        if not per_text_scores:
+            raise ValueError("all perturbation trials for a test text collided with training examples")
         mean_robustness_per_text.append((text, float(statistics.mean(per_text_scores))))
 
     overall_robustness = [rec["robustness_f1"] for rec in robustness_records]
@@ -208,16 +207,28 @@ def run_evaluation(
     gate_info = _collect_gate_diagnostics(ait, texts[0])
 
     results: Dict[str, object] = {
+        "schema_version": 2,
+        "evaluation_partition": "held_out_test",
+        "split": split.receipt,
+        "protocol": {
+            "training": "Only train_pool is passed to training; internal validation is drawn from this pool.",
+            "internal_validation_fraction": cfg.validation_split,
+            "segmentation_and_robustness": "Held-out test texts only; teacher labels define gold, not predictions.",
+            "latency": "Encode cache cleared before every measured encode call.",
+            "scope": "Small synthetic corpus; no external-corpus generalization claim.",
+        },
         "seed": seed,
         "latency_prompt": latency_prompt,
         "latency_runs": latency_runs,
         "latency_seconds": latency,
+        "latency_samples_seconds": latency_samples,
         "segmentation": {
             "per_sample": per_sample,
             "mean": float(statistics.mean(f1_scores)) if f1_scores else 0.0,
             "stdev": float(statistics.pstdev(f1_scores)) if len(f1_scores) > 1 else 0.0,
         },
         "robustness": {
+            "excluded_training_collisions": excluded_training_collisions,
             "noise_level": robustness_noise,
             "trials": robustness_trials,
             "records": robustness_records,
@@ -230,23 +241,22 @@ def run_evaluation(
             else 0.0,
         },
         "gate_diagnostics": gate_info,
-        "train_summary": summary,
+        "train_summary": train_info["summary"],
+        "training": train_info,
     }
 
     json_path = output_dir / "evaluation_metrics.json"
     json_path.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
 
-    csv_lines = ["text,f1"]
-    for entry in per_sample:
-        snippet = entry["text"].replace("\n", " ")
-        csv_lines.append(f'"{snippet}",{entry["f1"]:.6f}')
-    (output_dir / "segmentation_f1.csv").write_text("\n".join(csv_lines), encoding="utf-8")
+    with (output_dir / "segmentation_f1.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["text", "f1"])
+        writer.writerows((entry["text"], f'{entry["f1"]:.6f}') for entry in per_sample)
 
-    robustness_lines = ["text,trial,robustness_f1"]
-    for entry in robustness_records:
-        snippet = entry["text"].replace("\n", " ")
-        robustness_lines.append(f'"{snippet}",{entry["trial"]},{entry["robustness_f1"]:.6f}')
-    (output_dir / "robustness.csv").write_text("\n".join(robustness_lines), encoding="utf-8")
+    with (output_dir / "robustness.csv").open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["text", "trial", "robustness_f1"])
+        writer.writerows((entry["text"], entry["trial"], f'{entry["robustness_f1"]:.6f}') for entry in robustness_records)
 
     return results
 
@@ -256,7 +266,7 @@ def main() -> None:
     parser.add_argument(
         "--output",
         type=Path,
-        default=Path("docs/whitepaper/data"),
+        default=Path("reports/evaluation"),
         help="Directory where evaluation artefacts will be stored.",
     )
     parser.add_argument("--latency-runs", type=int, default=8, help="Number of encode passes for latency.")
@@ -273,6 +283,9 @@ def main() -> None:
         help="Probability of perturbing a character when measuring robustness.",
     )
     parser.add_argument("--seed", type=int, default=2024, help="Random seed used for evaluation runs.")
+    parser.add_argument("--max-samples", type=int, default=None, help="Cap unique samples across languages before splitting.")
+    parser.add_argument("--test-fraction", type=float, default=0.25, help="Held-out fraction within each selected language.")
+    parser.add_argument("--languages", nargs="+", default=None, help="Curated multilingual language codes to include alongside the reflective corpus.")
     args = parser.parse_args()
 
     results = run_evaluation(
@@ -281,6 +294,9 @@ def main() -> None:
         robustness_trials=args.robustness_trials,
         robustness_noise=args.robustness_noise,
         seed=args.seed,
+        max_samples=args.max_samples,
+        test_fraction=args.test_fraction,
+        languages=args.languages,
     )
     print(json.dumps({k: v for k, v in results.items() if k not in {"train_summary", "segmentation", "robustness"}}, indent=2))
 
