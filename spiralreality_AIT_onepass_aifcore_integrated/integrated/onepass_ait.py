@@ -33,6 +33,8 @@ class GateDiagnostics:
 class SegmentationAIFConfig:
     """Configuration for Active-Inference-style policy selection over segmentation."""
 
+    # Retained only for explicitly requested legacy_efe comparisons. Re-decoding
+    # the same logits is not a new observation with policy-specific precision.
     prior_sigma: float = 0.35
     target_boundary_rate: float = 0.18
     target_punct_boundary_rate: float = 0.85
@@ -61,6 +63,10 @@ class SegmentationAIFConfig:
             "DecideNow": 0.35,
         }
     )
+    selection_mode: str = "posterior_risk"
+    marginal_temperature: float = 1.0
+    false_positive_cost: float = 1.0
+    false_negative_cost: float = 1.0
 
 
 class OnePassAIT:
@@ -469,7 +475,11 @@ class OnePassAIT:
         return float((ent_norm - 0.5) * 6.0)
 
     def select_policy_aif(self, text: str, cfg: Optional[SegmentationAIFConfig] = None) -> Dict[str, object]:
-        """Select a segmentation policy by minimizing expected free energy (EFE)."""
+        """Score bias-conditioned decoders against one shared boundary belief.
+
+        The default minimizes expected boundary error without claiming new
+        information. The old Gaussian EFE proxy is available as ``legacy_efe``.
+        """
 
         logits = self.student._python_logits(text)
         return self._select_policy_from_logits(text, logits, cfg)
@@ -480,11 +490,23 @@ class OnePassAIT:
         """Reuse one feature/encoder pass for all policy-conditioned CRF paths."""
 
         cfg = cfg or SegmentationAIFConfig()
+        if cfg.selection_mode not in ("posterior_risk", "legacy_efe"):
+            raise ValueError("selection_mode must be 'posterior_risk' or 'legacy_efe'")
+        if cfg.selection_mode == "posterior_risk":
+            for name in ("marginal_temperature", "false_positive_cost", "false_negative_cost"):
+                if not math.isfinite(getattr(cfg, name)) or getattr(cfg, name) <= 0:
+                    raise ValueError(f"{name} must be finite and positive")
+            biases = [float(cfg.logit_bias_by_policy.get(policy, 0.0)) for policy in self.policies]
+            if any(not math.isfinite(bias) for bias in biases) or 0.0 not in biases:
+                raise ValueError("posterior_risk requires finite biases and a zero-bias candidate")
         if not text or len(text) <= 1:
-            return {"chosen_policy": "DecideNow", "candidates": [], "r3_mix": 0.0}
+            return {"chosen_policy": "DecideNow", "candidates": [], "r3_mix": 0.0,
+                    "selection_mode": cfg.selection_mode}
 
         base_probs = self.student.boundary_probs_with_logit_bias(text, 0.0, logits=logits)
         r3_mix = self._r3_mix_from_boundary_probs(base_probs)
+        if cfg.selection_mode == "posterior_risk":
+            return self._select_by_posterior_risk(text, logits, base_probs, cfg, r3_mix)
         stats_dim = 3
         prior = GaussianBelief(mu=np.zeros(stats_dim), Sigma=(cfg.prior_sigma**2) * np.eye(stats_dim))
 
@@ -522,6 +544,7 @@ class OnePassAIT:
         chosen = min(candidates, key=lambda row: float(row["total"])) if candidates else None
         return {
             "chosen_policy": chosen["policy"] if chosen is not None else None,
+            "selection_mode": "legacy_efe",
             "r3_mix": float(r3_mix),
             "baseline_stats": self._segmentation_stats(text, base_probs).tolist(),
             "preference": {
@@ -530,6 +553,41 @@ class OnePassAIT:
             },
             "candidates": candidates,
         }
+
+    def _select_by_posterior_risk(self, text, logits, base_probs, cfg, r3_mix):
+        belief = np.asarray(base_probs, dtype=float)
+        if cfg.marginal_temperature != 1.0:
+            clipped = np.clip(belief, 1e-12, 1.0 - 1e-12)
+            odds = (np.log(clipped) - np.log(1.0 - clipped)) / cfg.marginal_temperature
+            belief = 1.0 / (1.0 + np.exp(-np.clip(odds, -700.0, 700.0)))
+        candidates = []
+        for policy in self.policies:
+            bias = float(cfg.logit_bias_by_policy.get(policy, 0.0))
+            tokens = self.student.decode_with_logit_bias(text, bias, logits=logits)["tokens"]
+            boundaries = np.zeros(len(text) - 1, dtype=float)
+            offset = 0
+            for token in tokens[:-1]:
+                offset += len(token)
+                boundaries[offset - 1] = 1.0
+            expected_fp = float((boundaries * (1.0 - belief)).mean())
+            expected_fn = float(((1.0 - boundaries) * belief).mean())
+            risk = cfg.false_positive_cost * expected_fp + cfg.false_negative_cost * expected_fn
+            probs = base_probs if bias == 0.0 else self.student.boundary_probs_with_logit_bias(text, bias, logits=logits)
+            candidates.append({"policy": policy, "logit_bias": bias,
+                               "stats": self._segmentation_stats(text, probs).tolist(),
+                               "expected_fp_rate": expected_fp, "expected_fn_rate": expected_fn,
+                               "risk": risk, "epistemic": 0.0, "w": 0.0, "total": risk})
+        # Identical decodes have identical risk. Prefer the unchanged decoder
+        # on ties; policy diversity is not an objective.
+        chosen = min(candidates, key=lambda row: (row["total"], abs(row["logit_bias"]), row["policy"]))
+        baseline = next(row for row in candidates if row["logit_bias"] == 0.0)
+        return {"chosen_policy": chosen["policy"], "selection_mode": "posterior_risk",
+                "evidence": "shared_crf_posterior_no_new_observation",
+                "marginal_temperature": cfg.marginal_temperature,
+                "false_positive_cost": cfg.false_positive_cost, "false_negative_cost": cfg.false_negative_cost,
+                "baseline_risk": baseline["risk"], "selected_risk": chosen["risk"],
+                "baseline_stats": self._segmentation_stats(text, base_probs).tolist(),
+                "r3_mix": float(r3_mix), "candidates": candidates}
 
     def segment_text(
         self,
