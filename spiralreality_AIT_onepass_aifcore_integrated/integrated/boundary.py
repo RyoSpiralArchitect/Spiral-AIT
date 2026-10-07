@@ -104,6 +104,7 @@ class StudentTrainingConfig:
     context_hidden_dim: int = 32
     lexical_buckets: int = 0
     lexical_lr: float = 0.05
+    train_context_encoder: bool = False
 
 
 class BoundaryStudent:
@@ -120,6 +121,7 @@ class BoundaryStudent:
         self.max_grad_norm: Optional[float] = 10.0
         self.lexical_buckets = 0
         self._fitted_backend: Optional[str] = None
+        self.train_context_encoder = False
         self._init_parameters()
         self.encoder_adapter: Optional["SpectralTransformerAdapter"] = None
         self.use_encoder_context: bool = True
@@ -154,7 +156,9 @@ class BoundaryStudent:
                 self.compiled_backend = None
 
     def configure(self, cfg: StudentTrainingConfig) -> None:
+        self._validate_encoder_training(cfg)
         lexical_buckets = self._validate_lexical_config(cfg)
+        self.train_context_encoder = cfg.train_context_encoder
         self.history = []
         self.best_state = None
         self.hidden_dim = cfg.hidden_dim
@@ -364,7 +368,20 @@ class BoundaryStudent:
         if self.ctx_w is not None and hasattr(self.ctx_w, "dtype") and self.ctx_w.dtype != self.dtype:
             self.ctx_w = np.array(self.ctx_w, dtype=self.dtype, copy=True)
 
-    def _encode_context(self, seq: BoundarySequence) -> Optional[np.ndarray]:
+    def _validate_encoder_training(self, cfg: StudentTrainingConfig) -> None:
+        if not isinstance(cfg.train_context_encoder, bool):
+            raise ValueError("train_context_encoder must be a boolean")
+        if not cfg.train_context_encoder:
+            return
+        if not cfg.use_encoder_context or self.encoder_adapter is None:
+            raise ValueError("train_context_encoder requires an attached context encoder")
+        methods = ("forward_with_cache", "backward", "trainable_parameters")
+        if any(not callable(getattr(self.encoder_adapter, name, None)) for name in methods):
+            raise ValueError("train_context_encoder requires a differentiable encoder; select encoder_backend='numpy'")
+        if not math.isfinite(cfg.encoder_lr) or cfg.encoder_lr < 0:
+            raise ValueError("encoder_lr must be finite and nonnegative")
+
+    def _encode_context(self, seq: BoundarySequence, *, retain_cache: bool = False):
         if not self._context_ready():
             return None
         assert self.encoder_adapter is not None
@@ -385,6 +402,8 @@ class BoundaryStudent:
         if gate_pos.shape[0] != X.shape[0]:
             gate_pos = np.resize(gate_pos, (X.shape[0],))
         gate_mask = np.minimum.outer(gate_pos, gate_pos).astype(float, copy=False)
+        if retain_cache:
+            return self.encoder_adapter.forward_with_cache(X, gate_pos, gate_mask=gate_mask)
         H = self.encoder_adapter.forward(X, gate_pos, gate_mask=gate_mask)
         return np.asarray(H, dtype=float)
 
@@ -526,7 +545,7 @@ class BoundaryStudent:
         vec = window_vec if hasattr(window_vec, "shape") else np.array(window_vec, dtype=self.dtype)
         return self.W_window @ vec + self.b_window
 
-    def _forward_sequence(self, seq: BoundarySequence) -> Tuple[List[float], List[Dict[str, object]]]:
+    def _forward_sequence(self, seq: BoundarySequence, *, retain_encoder_cache: bool = False) -> Tuple[List[float], List[Dict[str, object]]]:
         # The basis changes during training and can be restored by early stopping.
         # Refresh cached train and validation features using the same basis as inference.
         self._refresh_phase_features(seq)
@@ -539,7 +558,11 @@ class BoundaryStudent:
         embeddings = np.zeros((length, self.emb_dim), dtype=self.dtype)
         for i, cat in enumerate(seq.categories):
             embeddings[i] = self.embeddings[int(cat)]
-        ctx_H = self._encode_context(seq)
+        encoder_tape = None
+        if retain_encoder_cache and seq.text and self._context_ready():
+            ctx_H, encoder_tape = self._encode_context(seq, retain_cache=True)
+        else:
+            ctx_H = self._encode_context(seq)
         caches: List[Dict[str, object]] = []
         logits: List[float] = []
         for idx in range(len(seq.labels)):
@@ -580,6 +603,8 @@ class BoundaryStudent:
                     "lexical_features": lexical_features,
                 }
             )
+        if caches and encoder_tape is not None:
+            caches[0]["encoder_tape"] = encoder_tape
         return logits, caches
 
     # ------------------------------------------------------------------
@@ -688,6 +713,7 @@ class BoundaryStudent:
         cfg: Optional[StudentTrainingConfig] = None,
     ) -> Dict[str, object]:
         cfg = cfg or StudentTrainingConfig()
+        self._validate_encoder_training(cfg)
         lexical_buckets = self._validate_lexical_config(cfg)
         texts_list = list(texts)
         segments_list = [list(seg) if not isinstance(seg, str) else seg for seg in segments]
@@ -700,6 +726,7 @@ class BoundaryStudent:
             raise ValueError("validation_split must be in [0, 1)")
         # Validate before configuring either the Python or a native backend.
         texts, segments = texts_list, segments_list
+        self.train_context_encoder = cfg.train_context_encoder
         if not lexical_buckets:
             # A successful native retrain must not retain an earlier residual.
             self.lexical_buckets = 0
@@ -866,6 +893,7 @@ class BoundaryStudent:
             "device_preference": cfg.device_preference,
             "lexical_buckets": self.lexical_buckets,
             "lexical_lr": cfg.lexical_lr,
+            "train_context_encoder": self.train_context_encoder,
         }
         meta = self._backend_metadata(str(summary["backend"]), fallbacks)
         summary.setdefault("backend_used", meta["backend_used"])
@@ -905,16 +933,20 @@ class BoundaryStudent:
         if self.ctx_w is not None:
             grads["ctx_w"] = np.zeros_like(self.ctx_w)
             grads["ctx_b"] = 0.0
+        if self.train_context_encoder:
+            grads["encoder"] = {name: np.zeros_like(value)
+                                for name, value in self.encoder_adapter.trainable_parameters().items()}
         return grads
 
     def _sequence_gradients(
         self, seq: BoundarySequence, cfg: StudentTrainingConfig
     ) -> Tuple[float, Dict[str, object], List[np.ndarray]]:
-        logits, caches = self._forward_sequence(seq)
+        logits, caches = self._forward_sequence(seq, retain_encoder_cache=self.train_context_encoder)
         label_list = self._labels_to_int(seq.labels)
         loss, grad_logits, grad_trans, marginals = self._crf_loss(logits, label_list)
         grads = self._zero_grad()
         embed_grads = np.zeros((len(seq.categories), self.emb_dim), dtype=self.dtype)
+        encoder_gradient = np.zeros((len(seq.text), self._encoder_model_dim()), dtype=float) if self.train_context_encoder else None
         for i, cache in enumerate(caches):
             grad_logit = float(grad_logits[i])
             hidden = cache["hidden"]
@@ -931,7 +963,8 @@ class BoundaryStudent:
 
             grads["gate_w"] += grad_logit * gate_feats
             grads["gate_b"] += grad_logit
-            self.phase.apply_error(seq.text, i, grad_logit, scale=cfg.phase_lr)
+            if cfg.phase_lr != 0:
+                self.phase.apply_error(seq.text, i, grad_logit, scale=cfg.phase_lr)
 
             grads["W_out"] += grad_logit * hidden
             grads["b_out"] += grad_logit
@@ -946,6 +979,10 @@ class BoundaryStudent:
                     grad_ctx_pre = (grad_logit * self.ctx_w) * (np.ones_like(ctx_hidden_sq) - ctx_hidden_sq)
                     grads["ctx_b1"] += grad_ctx_pre
                     grads["ctx_W1"] += np.outer(grad_ctx_pre, ctx_delta_arr)
+                    if encoder_gradient is not None:
+                        grad_delta = self.ctx_W1.T @ grad_ctx_pre
+                        encoder_gradient[i + 1] += grad_delta
+                        encoder_gradient[i] -= grad_delta
 
             grad_hidden = grad_logit * self.W_out
             hidden_sq = hidden * hidden if hasattr(hidden, "__mul__") else np.array([float(h) ** 2 for h in hidden])
@@ -963,7 +1000,10 @@ class BoundaryStudent:
 
         grads["transitions"] += grad_trans
 
-        if self.encoder_adapter is not None:
+        if self.train_context_encoder:
+            if caches and "encoder_tape" in caches[0]:
+                _, grads["encoder"] = self.encoder_adapter.backward(encoder_gradient, caches[0]["encoder_tape"])
+        elif self.encoder_adapter is not None:
             gate_targets = self._char_gate_targets(label_list, marginals)
             base_gate = [sigmoid(float(c)) for c in (seq.curvature.tolist() if hasattr(seq.curvature, "tolist") else seq.curvature)]
             self.encoder_adapter.tune_from_boundary(base_gate, gate_targets, lr=cfg.encoder_lr)
@@ -997,6 +1037,8 @@ class BoundaryStudent:
             total += float(np.sum(self.ctx_W1 * self.ctx_W1))
         if self.ctx_w is not None:
             total += float(np.sum(self.ctx_w * self.ctx_w))
+        if self.train_context_encoder:
+            total += sum(float(np.sum(value * value)) for value in self.encoder_adapter.trainable_parameters().values())
         return total
 
     def _accumulate(self, accum: Dict[str, object], grads: Dict[str, object]) -> None:
@@ -1018,6 +1060,9 @@ class BoundaryStudent:
         if "ctx_w" in accum and "ctx_w" in grads:
             accum["ctx_w"] += grads["ctx_w"]
             accum["ctx_b"] += grads["ctx_b"]
+        if "encoder" in accum:
+            for name, gradient in grads["encoder"].items():
+                accum["encoder"][name] += gradient
 
     def _apply_gradients(self, grads: Dict[str, object], cfg: StudentTrainingConfig, batch_size: int) -> None:
         base_scale = cfg.lr / max(1, batch_size)
@@ -1051,6 +1096,12 @@ class BoundaryStudent:
             if self.ctx_w is not None and "ctx_w" in grads:
                 self.ctx_w -= ctx_scale * (grads["ctx_w"] + cfg.reg * self.ctx_w)
                 self.ctx_b -= ctx_scale * grads.get("ctx_b", 0.0)
+        if self.train_context_encoder:
+            # Match the per-example regularizer in the reported loss. The data
+            # gradient is accumulated across examples, then averaged once.
+            encoder_scale = cfg.encoder_lr * grad_scale
+            for name, parameter in self.encoder_adapter.trainable_parameters().items():
+                parameter -= encoder_scale * (grads["encoder"][name] / max(1, batch_size) + cfg.reg * parameter)
 
     def _grad_norm(self, grads: Dict[str, object]) -> float:
         total = 0.0
@@ -1063,6 +1114,7 @@ class BoundaryStudent:
         total += float(grads["b_out"] ** 2)
         total += float(grads["gate_b"] ** 2)
         total += sum(float(value) ** 2 for value in grads.get("lexical_weights", {}).values())
+        total += sum(float(np.sum(value * value)) for value in grads.get("encoder", {}).values())
         if "ctx_W1" in grads:
             total += float(np.sum(grads["ctx_W1"] * grads["ctx_W1"]))
         if "ctx_b1" in grads:
@@ -1075,6 +1127,7 @@ class BoundaryStudent:
     def _capture_state(self) -> Dict[str, object]:
         state: Dict[str, object] = {
             "fitted_backend": self._fitted_backend or "python",
+            "train_context_encoder": self.train_context_encoder,
             "architecture": {
                 "hidden_dim": self.hidden_dim,
                 "emb_dim": self.emb_dim,
@@ -1119,6 +1172,7 @@ class BoundaryStudent:
 
     def _restore_state(self, state: Dict[str, object]) -> None:
         self._fitted_backend = state.get("fitted_backend", "python")
+        self.train_context_encoder = bool(state.get("train_context_encoder", False))
         architecture = state.get("architecture", {})
         if architecture.get("dtype") == "float64" and hasattr(np, "float64"):
             self.dtype = np.float64

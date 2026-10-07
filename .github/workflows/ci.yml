@@ -28,3 +28,16 @@ jobs:
           /tmp/ait-wheel/bin/python -m pip install dist/*.whl
           cd /tmp
           /tmp/ait-wheel/bin/python -c "from spiralreality_AIT_onepass_aifcore_integrated.integrated.onepass_ait import OnePassAIT; m = OnePassAIT(latent_dim=16, encoder_layers=1); t = 'Hello world.'; assert ''.join(m.segment_text(t, use_aif=True)) == t"
+          /tmp/ait-wheel/bin/python - <<'PY'
+          import json
+          import numpy as np
+          from spiralreality_AIT_onepass_aifcore_integrated.integrated.onepass_ait import OnePassAIT, StudentTrainingConfig
+          m = OnePassAIT(latent_dim=8, encoder_layers=1, encoder_heads=2, encoder_backend="numpy")
+          before = m.encoder.Wq[0].copy()
+          m.train_student(["ab cd"], [["ab", " ", "cd"]], StudentTrainingConfig(
+              epochs=1, validation_split=0, phase_lr=0, train_context_encoder=True))
+          assert not np.array_equal(before, m.encoder.Wq[0])
+          restored = OnePassAIT(latent_dim=8, encoder_layers=1, encoder_heads=2, encoder_backend="numpy")
+          restored.load_state_dict(json.loads(json.dumps(m.state_dict())))
+          assert restored.segment_text("ab cd", include_confidence=True) == m.segment_text("ab cd", include_confidence=True)
+          PY
