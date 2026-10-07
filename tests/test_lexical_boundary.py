@@ -94,15 +94,18 @@ def test_cached_lexical_features_survive_phase_updates_and_rebuild_for_new_bucke
 
 def test_lexical_gradient_participates_in_clipping_and_regularisation():
     student, cfg = make_student(4, lexical_lr=0.05, max_grad_norm=5.0, reg=0.1)
+    for parameter in student._regularized_parameters().values():
+        parameter.fill(0)
     student.lexical_weights[:] = [3, 4, 1, 2]
     initial = student.lexical_weights.copy()
     gradients = student._zero_grad()
     gradients["lexical_weights"] = {0: 6.0, 1: 8.0}
     assert student._grad_norm(gradients) == 10.0
     student._apply_gradients(gradients, cfg, batch_size=2)
-    scale = cfg.lexical_lr / 2 * (5 / (10 + 1e-9))
+    objective_gradient = np.array([3.3, 4.4, 0.1, 0.2])
+    scale = cfg.lexical_lr * (5 / (np.linalg.norm(objective_gradient) + 1e-9))
     np.testing.assert_allclose(
-        student.lexical_weights, initial * (1 - scale * cfg.reg) - scale * np.array([6, 8, 0, 0]),
+        student.lexical_weights, initial - scale * objective_gradient,
     )
 
 

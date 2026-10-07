@@ -156,6 +156,7 @@ class BoundaryStudent:
                 self.compiled_backend = None
 
     def configure(self, cfg: StudentTrainingConfig) -> None:
+        self._validate_gradient_config(cfg)
         self._validate_encoder_training(cfg)
         lexical_buckets = self._validate_lexical_config(cfg)
         self.train_context_encoder = cfg.train_context_encoder
@@ -380,6 +381,13 @@ class BoundaryStudent:
             raise ValueError("train_context_encoder requires a differentiable encoder; select encoder_backend='numpy'")
         if not math.isfinite(cfg.encoder_lr) or cfg.encoder_lr < 0:
             raise ValueError("encoder_lr must be finite and nonnegative")
+
+    @staticmethod
+    def _validate_gradient_config(cfg: StudentTrainingConfig) -> None:
+        if not math.isfinite(cfg.reg) or cfg.reg < 0:
+            raise ValueError("reg must be finite and nonnegative")
+        if cfg.max_grad_norm is not None and (not math.isfinite(cfg.max_grad_norm) or cfg.max_grad_norm < 0):
+            raise ValueError("max_grad_norm must be finite and nonnegative, or None")
 
     def _encode_context(self, seq: BoundarySequence, *, retain_cache: bool = False):
         if not self._context_ready():
@@ -713,6 +721,7 @@ class BoundaryStudent:
         cfg: Optional[StudentTrainingConfig] = None,
     ) -> Dict[str, object]:
         cfg = cfg or StudentTrainingConfig()
+        self._validate_gradient_config(cfg)
         self._validate_encoder_training(cfg)
         lexical_buckets = self._validate_lexical_config(cfg)
         texts_list = list(texts)
@@ -842,6 +851,7 @@ class BoundaryStudent:
             accum = self._zero_grad()
             batch_count = 0
             total_loss = 0.0
+            update_diagnostics = []
             for idx in train_idx:
                 seq = get_sequence(idx)
                 loss, grads, marginals = self._sequence_gradients(seq, cfg)
@@ -849,12 +859,17 @@ class BoundaryStudent:
                 self._accumulate(accum, grads)
                 batch_count += 1
                 if batch_count % cfg.batch_size == 0:
-                    self._apply_gradients(accum, cfg, cfg.batch_size)
+                    update_diagnostics.append(self._apply_gradients(accum, cfg, cfg.batch_size))
                     accum = self._zero_grad()
             if batch_count % cfg.batch_size != 0:
-                self._apply_gradients(accum, cfg, batch_count % cfg.batch_size)
+                update_diagnostics.append(self._apply_gradients(accum, cfg, batch_count % cfg.batch_size))
             train_count = max(1, len(train_idx))
             metrics = {"epoch": float(epoch + 1), "train_loss": float(total_loss / train_count)}
+            if update_diagnostics:
+                for name in update_diagnostics[0]:
+                    metrics["mean_" + name] = sum(row[name] for row in update_diagnostics) / len(update_diagnostics)
+                metrics["clipped_updates"] = sum(row["gradient_clip_scale"] < 1.0 for row in update_diagnostics)
+                metrics["optimizer_updates"] = len(update_diagnostics)
             if val_seqs:
                 val_loss, val_f1 = self.evaluate(val_seqs)
                 metrics.update({"val_loss": val_loss, "val_f1": val_f1})
@@ -894,6 +909,7 @@ class BoundaryStudent:
             "lexical_buckets": self.lexical_buckets,
             "lexical_lr": cfg.lexical_lr,
             "train_context_encoder": self.train_context_encoder,
+            "optimizer_contract": "mean_nll_l2_then_global_clip_v2",
         }
         meta = self._backend_metadata(str(summary["backend"]), fallbacks)
         summary.setdefault("backend_used", meta["backend_used"])
@@ -1025,18 +1041,18 @@ class BoundaryStudent:
                 targets[i + 1] = max(targets[i + 1], val)
         return targets
 
-    def _l2_norm(self) -> float:
-        total = 0.0
-        total += float(np.sum(self.W_window * self.W_window))
-        total += float(np.sum(self.W_out * self.W_out))
-        total += float(np.sum(self.gate_w * self.gate_w))
-        total += float(np.sum(self.embeddings * self.embeddings))
+    def _regularized_parameters(self) -> Dict[str, object]:
+        parameters = {name: getattr(self, name) for name in
+                      ("embeddings", "W_window", "W_out", "gate_w", "transitions")}
+        for name in ("ctx_W1", "ctx_w"):
+            if getattr(self, name) is not None:
+                parameters[name] = getattr(self, name)
         if self.lexical_buckets:
-            total += float(np.sum(self.lexical_weights * self.lexical_weights))
-        if self.ctx_W1 is not None:
-            total += float(np.sum(self.ctx_W1 * self.ctx_W1))
-        if self.ctx_w is not None:
-            total += float(np.sum(self.ctx_w * self.ctx_w))
+            parameters["lexical_weights"] = self.lexical_weights
+        return parameters
+
+    def _l2_norm(self) -> float:
+        total = sum(float(np.sum(value * value)) for value in self._regularized_parameters().values())
         if self.train_context_encoder:
             total += sum(float(np.sum(value * value)) for value in self.encoder_adapter.trainable_parameters().values())
         return total
@@ -1064,44 +1080,45 @@ class BoundaryStudent:
             for name, gradient in grads["encoder"].items():
                 accum["encoder"][name] += gradient
 
-    def _apply_gradients(self, grads: Dict[str, object], cfg: StudentTrainingConfig, batch_size: int) -> None:
-        base_scale = cfg.lr / max(1, batch_size)
-        grad_scale = 1.0
-        if cfg.max_grad_norm:
-            norm = self._grad_norm(grads)
-            if norm > cfg.max_grad_norm:
-                grad_scale = cfg.max_grad_norm / (norm + 1e-9)
-        scale = base_scale * grad_scale
-        crf_scale = cfg.crf_lr / max(1, batch_size) * grad_scale
-
-        self.embeddings -= scale * (grads["embeddings"] + cfg.reg * self.embeddings)
-        self.W_window -= scale * (grads["W_window"] + cfg.reg * self.W_window)
-        self.b_window -= scale * grads["b_window"]
-        self.W_out -= scale * (grads["W_out"] + cfg.reg * self.W_out)
-        self.b_out -= scale * grads["b_out"]
-        self.gate_w -= scale * (grads["gate_w"] + cfg.reg * self.gate_w)
-        self.gate_b -= scale * grads["gate_b"]
-        self.transitions -= crf_scale * (grads["transitions"] + cfg.reg * self.transitions)
+    def _mean_objective_gradient(self, grads: Dict[str, object], cfg: StudentTrainingConfig,
+                                 batch_size: int) -> Dict[str, object]:
+        """Gradient of mean CRF NLL plus the reported per-example L2 penalty."""
+        count = max(1, batch_size)
+        mean = {name: value / count for name, value in grads.items()
+                if name not in ("lexical_weights", "encoder")}
         if self.lexical_buckets:
-            lexical_scale = cfg.lexical_lr / max(1, batch_size) * grad_scale
-            self.lexical_weights *= 1.0 - lexical_scale * cfg.reg
+            mean["lexical_weights"] = np.zeros_like(self.lexical_weights)
             for bucket, value in grads["lexical_weights"].items():
-                self.lexical_weights[bucket] -= lexical_scale * value
-        if any(key in grads for key in ("ctx_W1", "ctx_b1", "ctx_w")):
-            ctx_scale = cfg.context_lr / max(1, batch_size) * grad_scale
-            if self.ctx_W1 is not None and "ctx_W1" in grads:
-                self.ctx_W1 -= ctx_scale * (grads["ctx_W1"] + cfg.reg * self.ctx_W1)
-            if self.ctx_b1 is not None and "ctx_b1" in grads:
-                self.ctx_b1 -= ctx_scale * grads["ctx_b1"]
-            if self.ctx_w is not None and "ctx_w" in grads:
-                self.ctx_w -= ctx_scale * (grads["ctx_w"] + cfg.reg * self.ctx_w)
-                self.ctx_b -= ctx_scale * grads.get("ctx_b", 0.0)
+                mean["lexical_weights"][bucket] = value / count
+        for name, parameter in self._regularized_parameters().items():
+            mean[name] += cfg.reg * parameter
         if self.train_context_encoder:
-            # Match the per-example regularizer in the reported loss. The data
-            # gradient is accumulated across examples, then averaged once.
-            encoder_scale = cfg.encoder_lr * grad_scale
+            mean["encoder"] = {name: grads["encoder"][name] / count + cfg.reg * parameter
+                               for name, parameter in self.encoder_adapter.trainable_parameters().items()}
+        return mean
+
+    def _apply_gradients(self, grads: Dict[str, object], cfg: StudentTrainingConfig,
+                         batch_size: int) -> Dict[str, float]:
+        # Average before clipping: duplicating a batch must not change its step.
+        # The same objective and clipping factor apply to the head and encoder.
+        mean = self._mean_objective_gradient(grads, cfg, batch_size)
+        norm = self._grad_norm(mean)
+        grad_scale = min(1.0, cfg.max_grad_norm / (norm + 1e-9)) if cfg.max_grad_norm else 1.0
+        for name in ("embeddings", "W_window", "b_window", "W_out", "b_out", "gate_w", "gate_b"):
+            setattr(self, name, getattr(self, name) - cfg.lr * grad_scale * mean[name])
+        self.transitions -= cfg.crf_lr * grad_scale * mean["transitions"]
+        if self.lexical_buckets:
+            self.lexical_weights -= cfg.lexical_lr * grad_scale * mean["lexical_weights"]
+        for name in ("ctx_W1", "ctx_b1", "ctx_w", "ctx_b"):
+            if name in mean:
+                setattr(self, name, getattr(self, name) - cfg.context_lr * grad_scale * mean[name])
+        encoder_norm = 0.0
+        if self.train_context_encoder:
+            encoder_norm = math.sqrt(sum(float(np.sum(value * value)) for value in mean["encoder"].values()))
             for name, parameter in self.encoder_adapter.trainable_parameters().items():
-                parameter -= encoder_scale * (grads["encoder"][name] / max(1, batch_size) + cfg.reg * parameter)
+                parameter -= cfg.encoder_lr * grad_scale * mean["encoder"][name]
+        return {"objective_gradient_norm": norm, "gradient_clip_scale": grad_scale,
+                "encoder_objective_gradient_norm": encoder_norm}
 
     def _grad_norm(self, grads: Dict[str, object]) -> float:
         total = 0.0
@@ -1113,7 +1130,11 @@ class BoundaryStudent:
         total += float(np.sum(grads["transitions"] * grads["transitions"]))
         total += float(grads["b_out"] ** 2)
         total += float(grads["gate_b"] ** 2)
-        total += sum(float(value) ** 2 for value in grads.get("lexical_weights", {}).values())
+        lexical = grads.get("lexical_weights", {})
+        if isinstance(lexical, dict):
+            total += sum(float(value) ** 2 for value in lexical.values())
+        else:
+            total += float(np.sum(lexical * lexical))
         total += sum(float(np.sum(value * value)) for value in grads.get("encoder", {}).values())
         if "ctx_W1" in grads:
             total += float(np.sum(grads["ctx_W1"] * grads["ctx_W1"]))
