@@ -70,6 +70,13 @@ These marginals describe model uncertainty, not calibrated correctness.
 Confidence and AIF require the Python CRF weights; a model fitted only by an
 optional native backend must be retrained on the Python path before using them.
 
+Checkpoints record which backend owns the fitted weights. Loading a Python
+checkpoint preserves installed native handles for later checkpoint swaps,
+while inference stays on the saved owner's weights. Legacy files containing
+both native weights and a Python-context flag, or multiple native heads, are
+ambiguous and are rejected. Migrate those files only with verified training
+provenance; the old context flag alone does not identify the trained backend.
+
 **One-command demo (compose)**  
 ```bash
 # if docker-compose.yml is provided

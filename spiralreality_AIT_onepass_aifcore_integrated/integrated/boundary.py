@@ -1220,12 +1220,17 @@ class BoundaryStudent:
         if fitted is None:
             candidates = [name for name, value in (("compiled", compiled_state), ("julia", julia_state)) if value is not None]
             lexical = state.get("lexical", {})
-            if state.get("use_encoder_context", False) or lexical.get("buckets", 0):
-                fitted = "python"
-            elif len(candidates) > 1:
-                raise ValueError("Legacy checkpoint has ambiguous fitted native backend ownership")
-            else:
-                fitted = candidates[0] if candidates else "python"
+            python_features = state.get("use_encoder_context", False) or lexical.get("buckets", 0)
+            # Old native training returned before updating use_encoder_context,
+            # and old exports also included unrelated installed native heads.
+            # Neither a True flag nor a native payload proves ownership when
+            # both are present. Refuse to silently select unsynchronized weights.
+            if len(candidates) > 1 or (candidates and python_features):
+                raise ValueError(
+                    "Legacy checkpoint has ambiguous fitted backend ownership; "
+                    "re-export with explicit fitted_backend provenance"
+                )
+            fitted = candidates[0] if candidates else "python"
         if fitted not in ("python", "compiled", "julia"):
             raise ValueError("Unsupported fitted boundary backend in checkpoint")
         native_state = compiled_state if fitted == "compiled" else julia_state
@@ -1245,11 +1250,9 @@ class BoundaryStudent:
         self._restore_state(base)
         self._fitted_backend = fitted
         self._ensure_context_parameters()
-        if fitted == "python":
-            # Installed native handles do not contain this checkpoint's fitted
-            # Python weights and must never substitute their own predictions.
-            self.julia_backend = self.compiled_backend = None
-        else:
+        # Availability is independent of fitted ownership. Keep installed
+        # handles for later checkpoint loads; _fitted_backend guards inference.
+        if fitted != "python":
             try:
                 native_handle.load_state(native_state.get("state", {}))
             except Exception as exc:

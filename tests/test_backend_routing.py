@@ -2,6 +2,7 @@
 
 import copy
 import json
+from pathlib import Path
 
 import numpy as np
 import pytest
@@ -54,7 +55,7 @@ def student():
 
 
 @pytest.mark.parametrize("legacy", [False, True])
-def test_python_checkpoint_disables_unrelated_native_handles(legacy):
+def test_python_checkpoint_ignores_but_retains_unrelated_native_handles(legacy):
     source = student()
     source.configure(StudentTrainingConfig(use_encoder_context=False))
     source.b_out = -50
@@ -69,7 +70,41 @@ def test_python_checkpoint_disables_unrelated_native_handles(legacy):
     assert target.decode("abcd")["tokens"] == ["abcd"]
     np.testing.assert_array_equal(target.boundary_probs("abcd"), source.boundary_probs("abcd"))
     assert native.calls == []
-    assert target.julia_backend is target.compiled_backend is None
+    assert target.julia_backend is target.compiled_backend is native
+
+
+@pytest.mark.parametrize("backend", ["compiled", "julia"])
+def test_authentic_legacy_native_checkpoint_with_stale_context_flag_is_rejected(backend):
+    fixture = json.loads((Path(__file__).parent / "fixtures" / "legacy_native_8840fee.json").read_text())
+    state = fixture["states"][backend]
+    assert state["use_encoder_context"] is True
+    assert "fitted_backend" not in state
+    target = student()
+    setattr(target, f"{backend}_backend", Native())
+    before = target.export_state()
+    with pytest.raises(ValueError, match="ambiguous fitted backend ownership"):
+        target.load_state(state)
+    assert target.export_state() == before
+
+
+@pytest.mark.parametrize("backend", ["compiled", "julia"])
+def test_repeated_python_native_python_checkpoint_loads_preserve_routing(backend):
+    python_source = student()
+    python_source.configure(StudentTrainingConfig(use_encoder_context=False))
+    python_source.b_out = -50
+    python_state = json.loads(json.dumps(python_source.export_state()))
+    native_source = student()
+    setattr(native_source, f"{backend}_backend", Native())
+    native_source.train(["abcd"], [list("abcd")], StudentTrainingConfig(use_encoder_context=False))
+    native_state = json.loads(json.dumps(native_source.export_state()))
+    target = student()
+    native = Native()
+    setattr(target, f"{backend}_backend", native)
+    for state, expected in ((python_state, ["abcd"]), (native_state, list("abcd")), (python_state, ["abcd"]), (native_state, list("abcd"))):
+        target.load_state(state)
+        assert target.decode("abcd")["tokens"] == expected
+        assert target._fitted_backend == state["fitted_backend"]
+        assert getattr(target, f"{backend}_backend") is native
 
 
 @pytest.mark.parametrize("backend", ["compiled", "julia"])
