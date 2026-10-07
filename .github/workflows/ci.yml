@@ -40,4 +40,8 @@ jobs:
           restored = OnePassAIT(latent_dim=8, encoder_layers=1, encoder_heads=2, encoder_backend="numpy")
           restored.load_state_dict(json.loads(json.dumps(m.state_dict())))
           assert restored.segment_text("ab cd", include_confidence=True) == m.segment_text("ab cd", include_confidence=True)
+          selection = m.select_policy_aif("ab cd")
+          assert selection["selection_mode"] == "posterior_risk"
+          assert selection["selected_risk"] <= selection["baseline_risk"]
+          assert all(row["epistemic"] == 0 for row in selection["candidates"])
           PY
