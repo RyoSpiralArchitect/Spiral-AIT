@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "study": "pud-trilingual-context-pilot-v1",
+  "partition_seed": 1739,
+  "fold_count": 10,
+  "test_folds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9],
+  "max_chars": 256,
+  "max_train_groups": 30,
+  "model_seed": 5042,
+  "model": {"latent_dim": 16, "encoder_layers": 1, "encoder_heads": 2, "encoder_backend": "numpy"},
+  "training": {
+    "epochs": 8, "batch_size": 4, "validation_split": 0,
+    "lr": 0.03, "crf_lr": 0.02, "context_lr": 0.03,
+    "phase_lr": 0, "encoder_lr": 0, "dtype": "float64",
+    "context_hidden_dim": 16, "lexical_buckets": 4096,
+    "lexical_lr": 0.05, "reg": 0.0001, "max_grad_norm": 10.0,
+    "use_encoder_context": true
+  },
+  "supervised_encoder_lr": 0.01,
+  "temperature_candidates": [0.5, 0.75, 1.0, 1.5, 2.0, 3.0, 4.0],
+  "streaming": {"max_window_chars": 96, "lookahead_chars": 16, "context_chars": 32, "min_boundary_confidence": 0.8, "hard_split": true},
+  "feed_chunk_chars": 16,
+  "protocol": "Two paired arms, fixed versus supervised context Transformer; same initialization, lexical head, examples, order and epoch budget. Phase is frozen. No test-driven tuning. Fit marginal temperature on the next document fold per language. All ten held-out folds are evaluated once. Training is capped by whole document groups: a capacity-limited CV pilot, not a full-data or official CoNLL test score."
+}
