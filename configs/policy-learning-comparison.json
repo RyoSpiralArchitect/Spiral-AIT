@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "study": "pud-policy-learning-comparison-v1",
+  "reference_commit": "76ac1ebc8a3af0da42a7537baab0e021b612a0c9",
+  "partition_seed": 1739,
+  "fold_count": 10,
+  "test_fold": 0,
+  "max_chars": 256,
+  "training_document_caps": [30, 120, null],
+  "seeds": [5042, 101, 2026],
+  "encoder_learning_rates": [0.001, 0.01, 0.05],
+  "model": {
+    "latent_dim": 16,
+    "encoder_layers": 1,
+    "encoder_heads": 2,
+    "encoder_backend": "numpy"
+  },
+  "training": {
+    "epochs": 8,
+    "batch_size": 4,
+    "validation_split": 0,
+    "lr": 0.03,
+    "crf_lr": 0.02,
+    "context_lr": 0.03,
+    "phase_lr": 0,
+    "encoder_lr": 0,
+    "dtype": "float64",
+    "context_hidden_dim": 16,
+    "lexical_buckets": 4096,
+    "lexical_lr": 0.05,
+    "reg": 0.0001,
+    "max_grad_norm": 10.0,
+    "use_encoder_context": true
+  },
+  "temperature_candidates": [0.5, 0.75, 1, 1.5, 2, 3, 4],
+  "selection": "Choose trained encoder learning rate by development macro boundary F1 pooled equally across languages; exact ties prefer the smaller learning rate. Record whether it beats the repaired fixed encoder on development. No test-driven choice or tuning.",
+  "protocol": "Exploratory follow-up on already inspected PUD. One fixed document test fold and its next development fold, three nested training-document budgets, three initialization seeds, fixed eight epochs. Compare the historical fixed encoder optimizer, repaired fixed encoder optimizer, and repaired supervised encoder selected from a predeclared development-only learning-rate grid. Evaluate direct decoding, explicit legacy EFE, shared-posterior risk, and development-calibrated risk on the same fitted models. This is not new independent-corpus confirmation or an official CoNLL score."
+}
