@@ -661,6 +661,9 @@ class OnePassAIT:
     def load_state_dict(self, state: Dict[str, object]) -> None:
         if state.get("latent_dim") != self.latent_dim:
             raise ValueError("Latent dimension mismatch in checkpoint")
+        # The phase is shared with the student. Reject ambiguous ownership or
+        # unavailable fitted backends before changing any outer model state.
+        self.student.validate_state_ownership(state["student"])
         self.goal_vec = np.array(state["goal_vec"], dtype=float)
         self.policy_vecs = {k: np.array(v, dtype=float) for k, v in state["policy_vecs"].items()}
         phase_state = self.phase.export_state()

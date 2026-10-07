@@ -1213,7 +1213,8 @@ class BoundaryStudent:
                 raise RuntimeError("Failed to export fitted compiled boundary backend state") from exc
         return state
 
-    def load_state(self, state: Dict[str, object]) -> None:
+    def validate_state_ownership(self, state: Dict[str, object]) -> str:
+        """Resolve fitted ownership and availability without changing live state."""
         compiled_state = state.get("_compiled") if isinstance(state, dict) else None
         julia_state = state.get("_julia") if isinstance(state, dict) else None
         fitted = state.get("fitted_backend")
@@ -1240,6 +1241,12 @@ class BoundaryStudent:
                 raise ValueError(f"Checkpoint requires its fitted {fitted} backend and serialized weights")
             if state.get("use_encoder_context", False) or state.get("lexical", {}).get("buckets", 0):
                 raise ValueError("Native checkpoint cannot use Python-only context or lexical emissions")
+        return fitted
+
+    def load_state(self, state: Dict[str, object]) -> None:
+        fitted = self.validate_state_ownership(state)
+        native_state = state.get(f"_{fitted}")
+        native_handle = getattr(self, f"{fitted}_backend", None)
         base = dict(state) if isinstance(state, dict) else state
         if isinstance(base, dict) and "_compiled" in base:
             base = dict(base)
