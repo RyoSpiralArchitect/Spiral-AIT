@@ -1,0 +1,135 @@
+{
+  "method": "matched_current_weights_recomputed_vs_shared_AIF_features",
+  "scope": "Local CPU inference only; no quality or whole-revision speed claim.",
+  "seed": 5042,
+  "repeats": 9,
+  "warmup_per_path_per_text": 1,
+  "order": "alternating",
+  "python": "3.12.6",
+  "numpy": "2.5.3",
+  "machine": "arm64",
+  "encoder_backend": "spectral-numpy:cpu",
+  "source_sha256": {
+    "boundary.py": "b50a15c33dfdf9a9cfce75d86e5c5e10af7f12057f4772dc1c20e9492fef74a7",
+    "onepass_ait.py": "b5c4a245e6b1b889b37dc506d7ef62db3ee791d4945fc5af93a42b5990b7d06d",
+    "encoder.py": "3f14284cd6c30f57c370e6b72f33b720272d5f34cd1aa11245248873067b2057",
+    "encoder_backends.py": "3cc9bf9f9d83e0f8698f941dc02ee5d3faf8e22fbf8aece3ef1ac1f11d1b2d30",
+    "phase.py": "6d2b91bcc6011d23e19c70d08e05d0eafa0c012de048be7f97fb773434000d84"
+  },
+  "rows": [
+    {
+      "text": "Streaming inference should retain complete words while comparing policies.",
+      "chars": 74,
+      "encoder_passes": {
+        "recomputed": 5,
+        "shared": 1
+      },
+      "latency_ms": {
+        "recomputed": [
+          40.82320800080197,
+          37.97475000101258,
+          37.95745899697067,
+          37.52770899882307,
+          37.90279199893121,
+          38.20300000006682,
+          37.43916700113914,
+          37.72170799857122,
+          37.433457997394726
+        ],
+        "shared": [
+          9.111625000514323,
+          8.704290998139186,
+          8.261375001893612,
+          8.698833000380546,
+          8.857916000124533,
+          8.280834001197945,
+          8.593916998506756,
+          8.89587499841582,
+          8.605500002886401
+        ]
+      },
+      "median_ms": {
+        "recomputed": 37.90279199893121,
+        "shared": 8.698833000380546
+      },
+      "median_ratio": 4.357227227752628,
+      "identical_tokens_policy_and_scores": true
+    },
+    {
+      "text": "新しい文章でも、分割と推論の結果を確認する。",
+      "chars": 22,
+      "encoder_passes": {
+        "recomputed": 5,
+        "shared": 1
+      },
+      "latency_ms": {
+        "recomputed": [
+          17.851500000688247,
+          17.452792002586648,
+          16.773708997789072,
+          16.707792001398047,
+          16.811792000225978,
+          16.61041600164026,
+          19.166333000612212,
+          15.946833002089988,
+          15.9285829977307
+        ],
+        "shared": [
+          3.8764999990235083,
+          6.270375000895001,
+          3.8952499999140855,
+          3.5309580016473774,
+          3.921375002391869,
+          3.5380830013309605,
+          3.61966700074845,
+          3.7837080017197877,
+          3.5900840011890978
+        ]
+      },
+      "median_ms": {
+        "recomputed": 16.773708997789072,
+        "shared": 3.7837080017197877
+      },
+      "median_ratio": 4.433140451156646,
+      "identical_tokens_policy_and_scores": true
+    },
+    {
+      "text": "Evidence arrives gradually; revise the provisional interpretation carefully.",
+      "chars": 76,
+      "encoder_passes": {
+        "recomputed": 5,
+        "shared": 1
+      },
+      "latency_ms": {
+        "recomputed": [
+          35.72737500144285,
+          36.92095800215611,
+          38.365291999070905,
+          35.500624999258434,
+          36.301624997577164,
+          38.34583299976657,
+          39.045584002451506,
+          43.46270800306229,
+          43.93966600036947
+        ],
+        "shared": [
+          8.331042001373135,
+          9.472375000768807,
+          8.108000001811888,
+          8.422834001976298,
+          8.236166002461687,
+          8.30458299969905,
+          9.247958998457761,
+          8.779749998211628,
+          9.684999997261912
+        ]
+      },
+      "median_ms": {
+        "recomputed": 38.34583299976657,
+        "shared": 8.422834001976298
+      },
+      "median_ratio": 4.552604621053824,
+      "identical_tokens_policy_and_scores": true
+    }
+  ]
+}

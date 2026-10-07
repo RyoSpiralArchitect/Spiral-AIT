@@ -217,9 +217,11 @@ def load_external_adapter(d_model: int, n_layers: int, seed: int) -> Optional[Ex
         if device_override is not None:
             device = _apply_device_request(impl, device_override)
         else:
-            device = str(getattr(module, "DEFAULT_DEVICE", getattr(impl, "device", "cpu")))
+            device = str(getattr(impl, "device", getattr(module, "DEFAULT_DEVICE", "cpu")))
 
-        backend = getattr(module, "BACKEND_KIND", getattr(impl, "backend", "julia"))
+        # Wrappers can delegate to NumPy when their compiled module is absent.
+        # Report the implementation actually used, rather than the wrapper name.
+        backend = getattr(impl, "backend", getattr(module, "BACKEND_KIND", candidate.backend))
         inventory = _normalise_inventory(getattr(module, "AVAILABLE_DEVICES", ()))
         if not inventory:
             inventory = _normalise_inventory(getattr(impl, "AVAILABLE_DEVICES", ()))

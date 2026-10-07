@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import operator
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -69,7 +71,18 @@ class OnePassAIT:
         *,
         encoder_layers: int = 6,
         encoder_heads: int = 4,
+        encode_cache_max_entries: int = 16,
+        encode_cache_max_bytes: int = 32 * 1024 * 1024,
     ):
+        for name, limit in (("encode_cache_max_entries", encode_cache_max_entries),
+                            ("encode_cache_max_bytes", encode_cache_max_bytes)):
+            try:
+                validated = operator.index(limit)
+            except TypeError as exc:
+                raise ValueError(f"{name} must be a non-negative integer") from exc
+            if isinstance(limit, bool) or validated < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+            setattr(self, f"_{name}", validated)
         self.latent_dim = latent_dim
         self.rng = np.random.default_rng(seed)
         self.policies = ["ProbeMotivation", "ProbeReliability", "SeekEvidence", "DecideNow"]
@@ -101,7 +114,7 @@ class OnePassAIT:
         self.last_gate_trace: List[float] = []
         self.last_attention: List[np.ndarray] = []
         self.last_gate_mask: Optional[np.ndarray] = None
-        self._encode_cache: Dict[str, Dict[str, np.ndarray]] = {}
+        self._encode_cache: OrderedDict[str, Dict[str, np.ndarray]] = OrderedDict()
         self._last_segment_metadata: Dict[str, object] = {}
 
     def train_student(
@@ -149,13 +162,15 @@ class OnePassAIT:
                 dataset_segments = ml_segments
                 dataset_tags = ml_tags
 
-        if not dataset_texts:
+        if not dataset_texts and texts is None and languages is None:
             from .corpus import TRAIN_TEXTS, teacher_segments
 
             dataset_texts = list(TRAIN_TEXTS)
             dataset_segments = teacher_segments(dataset_texts)
             dataset_tags = ["reflective"] * len(dataset_texts)
 
+        if not dataset_texts:
+            raise ValueError("Training requires at least one text")
         summary = self.student.train(dataset_texts, dataset_segments, cfg=cfg)
         self._encode_cache.clear()
         if isinstance(summary, dict):
@@ -228,7 +243,10 @@ class OnePassAIT:
 
     def encode(self, text: str) -> Dict[str, np.ndarray]:
         if not text:
-            return {
+            self.last_gate_trace = []
+            self.last_attention = []
+            self.last_gate_mask = None
+            result = {
                 "H": np.zeros((0, self.latent_dim)),
                 "r2_local": np.zeros(0),
                 "ps": np.zeros(0),
@@ -236,9 +254,23 @@ class OnePassAIT:
                 "phase_local": np.zeros((0, 3)),
                 "gate_mask": np.zeros((0, 0)),
             }
+            result.update(self.student.backend_metadata())
+            return result
         if text in self._encode_cache:
             cached = self._encode_cache[text]
-            return {key: value.copy() for key, value in cached.items()}
+            self._encode_cache.move_to_end(text)
+            result = {
+                key: value.copy() for key, value in cached.items()
+                if not key.startswith("_attention_")
+            }
+            self.last_gate_trace = result["gate_pos"].tolist()
+            self.last_gate_mask = result["gate_mask"].copy()
+            self.last_attention = [
+                value.copy() for key, value in cached.items()
+                if key.startswith("_attention_")
+            ]
+            result.update(self.student.backend_metadata())
+            return result
         chars = list(text)
         X = self._char_embs(text)
         ps = self.student.boundary_probs(text)
@@ -265,8 +297,8 @@ class OnePassAIT:
             gate_mask = np.zeros((0, 0))
         H = self.encoder.forward(X_phase, gate_pos, gate_mask=gate_mask)
         self.last_gate_trace = gate_pos.tolist()
-        self.last_attention = self.encoder.last_attn
-        self.last_gate_mask = gate_mask
+        self.last_attention = [np.array(attn).copy() for attn in self.encoder.last_attn]
+        self.last_gate_mask = gate_mask.copy()
         result = {
             "H": H,
             "r2_local": curvature,
@@ -275,14 +307,28 @@ class OnePassAIT:
             "phase_local": phase_local,
             "gate_mask": gate_mask,
         }
-        cache_entry: Dict[str, np.ndarray] = {}
-        for key, value in result.items():
-            arr = np.array(value)
-            arr_copy = arr.copy() if hasattr(arr, "copy") else np.array(value)
-            cache_entry[key] = arr_copy
-        self._encode_cache[text] = cache_entry
+        self._cache_encoding(text, result)
         result.update(self.student.backend_metadata())
         return result
+
+    def _cache_encoding(self, text: str, result: Dict[str, np.ndarray]) -> None:
+        if not self._encode_cache_max_entries or not self._encode_cache_max_bytes:
+            return
+        arrays = dict(result)
+        arrays.update({f"_attention_{index}": attn for index, attn in enumerate(self.last_attention)})
+        entry_bytes = sum(int(array.nbytes) for array in arrays.values())
+        # Decide before copying large attention matrices. Oversized results
+        # remain usable, but do not displace reusable smaller cache entries.
+        if entry_bytes > self._encode_cache_max_bytes:
+            return
+        retained_bytes = sum(int(array.nbytes) for entry in self._encode_cache.values() for array in entry.values())
+        while self._encode_cache and (
+            len(self._encode_cache) >= self._encode_cache_max_entries
+            or retained_bytes + entry_bytes > self._encode_cache_max_bytes
+        ):
+            _, evicted = self._encode_cache.popitem(last=False)
+            retained_bytes -= sum(int(array.nbytes) for array in evicted.values())
+        self._encode_cache[text] = {key: array.copy() for key, array in arrays.items()}
 
     def _phase_positional(self, phase_local: np.ndarray) -> np.ndarray:
         if hasattr(phase_local, "tolist"):
@@ -422,11 +468,19 @@ class OnePassAIT:
     def select_policy_aif(self, text: str, cfg: Optional[SegmentationAIFConfig] = None) -> Dict[str, object]:
         """Select a segmentation policy by minimizing expected free energy (EFE)."""
 
+        logits = self.student._python_logits(text)
+        return self._select_policy_from_logits(text, logits, cfg)
+
+    def _select_policy_from_logits(
+        self, text: str, logits: Sequence[float], cfg: Optional[SegmentationAIFConfig]
+    ) -> Dict[str, object]:
+        """Reuse one feature/encoder pass for all policy-conditioned CRF paths."""
+
         cfg = cfg or SegmentationAIFConfig()
         if not text or len(text) <= 1:
             return {"chosen_policy": "DecideNow", "candidates": [], "r3_mix": 0.0}
 
-        base_probs = self.student.boundary_probs_with_logit_bias(text, 0.0)
+        base_probs = self.student.boundary_probs_with_logit_bias(text, 0.0, logits=logits)
         r3_mix = self._r3_mix_from_boundary_probs(base_probs)
         stats_dim = 3
         prior = GaussianBelief(mu=np.zeros(stats_dim), Sigma=(cfg.prior_sigma**2) * np.eye(stats_dim))
@@ -447,7 +501,7 @@ class OnePassAIT:
         for policy in self.policies:
             logit_bias = float(cfg.logit_bias_by_policy.get(policy, 0.0))
             obs_sigma = float(cfg.obs_sigma_by_policy.get(policy, 0.12))
-            probs = base_probs if abs(logit_bias) < 1e-12 else self.student.boundary_probs_with_logit_bias(text, logit_bias)
+            probs = base_probs if abs(logit_bias) < 1e-12 else self.student.boundary_probs_with_logit_bias(text, logit_bias, logits=logits)
             stats = self._segmentation_stats(text, probs)
             o_Sigma = (obs_sigma**2) * np.eye(stats_dim)
             post = prior.merge_with_observation(stats, o_Sigma)
@@ -481,31 +535,54 @@ class OnePassAIT:
         *,
         use_aif: bool = False,
         aif_cfg: Optional[SegmentationAIFConfig] = None,
+        include_confidence: bool = False,
     ):
+        """Segment text, optionally returning spans and CRF marginal confidence.
+
+        ``include_confidence`` returns a metadata dictionary even when
+        ``return_metadata`` is false. Marginals describe model uncertainty;
+        they are not externally calibrated correctness probabilities. This
+        option uses the Python CRF so scores and decoded tokens share weights.
+        """
+        logits = self.student._python_logits(text) if use_aif or include_confidence else None
+        extra: Dict[str, object] = {}
+        logit_bias = 0.0
         if use_aif:
-            selection = self.select_policy_aif(text, cfg=aif_cfg)
+            assert logits is not None
+            selection = self._select_policy_from_logits(text, logits, aif_cfg)
             chosen_policy = selection.get("chosen_policy") or "ProbeMotivation"
             cfg = aif_cfg or SegmentationAIFConfig()
             logit_bias = float(cfg.logit_bias_by_policy.get(str(chosen_policy), 0.0))
-            result = self.student.decode_with_logit_bias(text, logit_bias=logit_bias)
-            if isinstance(result, dict) and "tokens" in result:
-                metadata = {k: v for k, v in result.items() if k != "tokens"}
-                metadata.update({"chosen_policy": chosen_policy, "aif": selection})
-                self._last_segment_metadata = metadata
-                if return_metadata:
-                    return {"tokens": result["tokens"], **metadata}
-                return result["tokens"]
-            self._last_segment_metadata = {"chosen_policy": chosen_policy, "aif": selection}
-            return result
+            extra = {"chosen_policy": chosen_policy, "aif": selection}
 
-        result = self.student.decode(text)
+        if logits is not None:
+            result = self.student.decode_with_logit_bias(text, logit_bias=logit_bias, logits=logits)
+        else:
+            result = self.student.decode(text)
+
         if isinstance(result, dict) and "tokens" in result:
             metadata = {k: v for k, v in result.items() if k != "tokens"}
+            metadata.update(extra)
+            if include_confidence:
+                assert logits is not None
+                probs = self.student.boundary_probs_with_logit_bias(text, logit_bias, logits=logits)
+                metadata["boundary_probabilities"] = probs.tolist()
+                metadata["boundary_entropy"] = self._boundary_entropy_mean(probs)
+                spans = []
+                start = 0
+                for token in result["tokens"]:
+                    end = start + len(token)
+                    spans.append({
+                        "start": start, "end": end,
+                        "boundary_probability": float(probs[end - 1]) if end < len(text) else None,
+                    })
+                    start = end
+                metadata["spans"] = spans
             self._last_segment_metadata = metadata
-            if return_metadata:
+            if return_metadata or include_confidence:
                 return {"tokens": result["tokens"], **metadata}
             return result["tokens"]
-        self._last_segment_metadata = {}
+        self._last_segment_metadata = extra
         return result
 
     def streaming_segmenter(
@@ -517,9 +594,13 @@ class OnePassAIT:
         hard_split: bool = True,
         use_aif: bool = False,
         aif_cfg: Optional[SegmentationAIFConfig] = None,
+        min_boundary_confidence: float = 0.0,
     ) -> ChunkedStreamingSegmenter:
-        def segmenter(window: str) -> Sequence[str]:
-            return self.segment_text(window, use_aif=use_aif, aif_cfg=aif_cfg)
+        def segmenter(window: str):
+            return self.segment_text(
+                window, use_aif=use_aif, aif_cfg=aif_cfg,
+                include_confidence=min_boundary_confidence > 0.0,
+            )
 
         return ChunkedStreamingSegmenter(
             segmenter,
@@ -527,6 +608,7 @@ class OnePassAIT:
             lookahead_chars=lookahead_chars,
             context_chars=context_chars,
             hard_split=hard_split,
+            min_boundary_confidence=min_boundary_confidence,
         )
 
     def gate_diagnostics(self) -> GateDiagnostics:
@@ -579,6 +661,9 @@ class OnePassAIT:
     def load_state_dict(self, state: Dict[str, object]) -> None:
         if state.get("latent_dim") != self.latent_dim:
             raise ValueError("Latent dimension mismatch in checkpoint")
+        # The phase is shared with the student. Reject ambiguous ownership or
+        # unavailable fitted backends before changing any outer model state.
+        self.student.validate_state_ownership(state["student"])
         self.goal_vec = np.array(state["goal_vec"], dtype=float)
         self.policy_vecs = {k: np.array(v, dtype=float) for k, v in state["policy_vecs"].items()}
         phase_state = self.phase.export_state()
@@ -590,4 +675,9 @@ class OnePassAIT:
         else:
             self.encoder.load_state(state["encoder"])
         self.dynamics.load_state(state["dynamics"])
-        self._phi_hist = {k: list(v) for k, v in state.get("phi_hist", {}).items()}
+        self._phi_hist = {k: list(state.get("phi_hist", {}).get(k, [])) for k in ("AB", "BC", "CA")}
+        self._encode_cache.clear()
+        self._last_segment_metadata = {}
+        self.last_gate_trace = []
+        self.last_attention = []
+        self.last_gate_mask = None

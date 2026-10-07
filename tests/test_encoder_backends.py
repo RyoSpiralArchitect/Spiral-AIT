@@ -6,6 +6,26 @@ import types
 from spiralreality_AIT_onepass_aifcore_integrated.integrated import encoder_backends
 
 
+def test_wrapper_metadata_reports_actual_fallback(monkeypatch):
+    import types
+    import sys
+
+    module_name = "test_numpy_fallback_adapter"
+    module = types.ModuleType(module_name)
+    module.BACKEND_KIND = "cpp"
+    module.DEFAULT_DEVICE = "cuda"
+    module.create_adapter = lambda **kwargs: types.SimpleNamespace(backend="spectral-numpy", device="cpu")
+    monkeypatch.setitem(sys.modules, module_name, module)
+    monkeypatch.setattr(encoder_backends, "_KNOWN_CANDIDATES", (
+        encoder_backends.BackendCandidate(module_name, "create_adapter", "cpp"),
+    ))
+    for name in ("SPIRAL_ENCODER_DEVICE", "SPIRAL_TRANSFORMER_DEVICE", "SPIRAL_DEVICE", "SPIRAL_DEFAULT_DEVICE"):
+        monkeypatch.delenv(name, raising=False)
+    handle = encoder_backends.load_external_adapter(16, 1, 0)
+    assert handle.backend == "spectral-numpy"
+    assert handle.device == "cpu"
+
+
 def _make_candidate(module_name: str, attr: str, backend: str) -> encoder_backends.BackendCandidate:
     return encoder_backends.BackendCandidate(module_name, attr, backend)
 
@@ -95,4 +115,3 @@ def test_load_external_adapter_device_override_without_keyword(monkeypatch):
 
     assert handle.device == "cuda"
     assert handle.device_inventory() == ("cpu", "cuda")
-

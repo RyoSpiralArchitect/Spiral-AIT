@@ -1,0 +1,2 @@
+# Keep full experiment receipts available without overwhelming source reviews.
+reports/upgrade-2026-10-05/*.json linguist-generated=true

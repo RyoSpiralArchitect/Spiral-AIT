@@ -7,14 +7,20 @@
 ![Profile](https://img.shields.io/badge/stack-NumPy_first%20%7C%20CPU_friendly-brightgreen)
 
 **Active-inference-inspired, streaming-friendly text segmentation & lightweight labeling.  
-One pass, tiny NN + CRF head, real-time on CPU with clear diagnostics.**
+NumPy features, a small learned NN + CRF head, and bounded streaming windows.**
 
-- **One-Pass & Streaming:** single forward sweep; stable on partial/streaming text.  
+- **Streaming:** configurable lookahead, token-preserving commits, and optional confidence-based waiting.
 - **Tiny & Fast:** NumPy-first, CPU-friendly; minimal deps and low memory.  
 - **Interpretable:** phase/energy style signals and gate diagnostics you can actually inspect.  
 - **CRF Head:** small NN features → CRF decoding for clean boundaries.  
 - **AIF Policy Selection (optional):** expected free energy (risk − epistemic value) over lightweight diagnostics to choose a segmentation policy (`use_aif=True`).  
-- **Ops-Ready:** simple CLI/API + container; drop-in for subtitle/chat/post-process pipelines.
+- **Reproducible:** disjoint train/test evaluation, checkpoint round trips, installable wheels, and API/container demos.
+
+The current model is a research segmenter, not a pretrained language model. The
+character-category NN, context MLP, and CRF learn from supervision. Transformer
+attention/FFN weights are random fixed features; phase planes and encoder gate
+scalars use heuristic updates. See [the upgrade evidence](docs/upgrade-2026-10-05.md)
+for measured results and remaining limits.
 
 ## Quick start
 
@@ -28,7 +34,7 @@ docker build -t spiralreality-ait:latest .
 docker run --rm -p 8000:8000 spiralreality-ait:latest
 ```
 
-**Minimal Python sample** (adjust the import to your package layout if needed):
+**Minimal Python sample:**
 ```python
 # pip install -e .   # make package importable
 from spiralreality_AIT_onepass_aifcore_integrated.integrated.onepass_ait import (
@@ -36,15 +42,49 @@ from spiralreality_AIT_onepass_aifcore_integrated.integrated.onepass_ait import 
     StudentTrainingConfig,
 )
 
-model = OnePassAIT()                # uses lightweight defaults; CPU is fine
-# Optional: tiny warmup on a toy corpus (few seconds)
-toy_texts = ["これはワンパス分割のデモです。", "This is a one-pass segmentation demo."]
-model.train_student(texts=toy_texts, cfg=StudentTrainingConfig(epochs=1))
+model = OnePassAIT()  # starts untrained
+model.train_student(cfg=StudentTrainingConfig(epochs=8))
 
 text = "Streaming input… chunk by chunk…"
 tokens = model.segment_text(text, use_aif=True)  # EFE-based policy selection (optional)
 print(tokens)
 ```
+
+For your own labels, pass `texts` and `segments` with
+`''.join(segments[i]) == texts[i]`, including whitespace. Mismatched labels are
+rejected before training. An explicit empty dataset is an error.
+
+Enable the experimental learned character/bigram residual with
+`StudentTrainingConfig(lexical_buckets=4096, lexical_lr=0.05)`. It augments the
+category head with a fixed-size signed hash table, uses the Python CRF path,
+and is included in checkpoints. The default remains disabled; evaluate it on
+your own held-out data before adoption.
+
+```python
+result = model.segment_text("Inspect each boundary.", include_confidence=True)
+print(result["spans"])  # character offsets and confidence at each token end
+print(result["boundary_probabilities"])  # one CRF marginal per interior boundary
+```
+
+These marginals describe model uncertainty, not calibrated correctness.
+Confidence and AIF require the Python CRF weights; a model fitted only by an
+optional native backend must be retrained on the Python path before using them.
+
+Checkpoints record which backend owns the fitted weights. Loading a Python
+checkpoint preserves installed native handles for later checkpoint swaps,
+while inference stays on the saved owner's weights. Legacy files containing
+both native weights and a Python-context flag, or multiple native heads, are
+ambiguous and are rejected. Migrate those files only with verified training
+provenance; the old context flag alone does not identify the trained backend.
+
+`encode()` keeps a least-recently-used cache with at most 16 entries and
+32 MiB of NumPy array payloads, including attention diagnostics. Configure
+`OnePassAIT(encode_cache_max_entries=16, encode_cache_max_bytes=32 * 1024 * 1024)`
+to change these limits; either limit set to zero disables retention. A result
+larger than the byte budget is returned without caching. These limits cover
+retained cache arrays, not peak inference memory, Python object overhead, or
+the current result/diagnostics. Cache policy is local to the instance and is
+not part of a model checkpoint.
 
 **One-command demo (compose)**  
 ```bash
@@ -63,6 +103,7 @@ stream = model.streaming_segmenter(
     lookahead_chars=64,
     context_chars=128,
     use_aif=True,  # optional
+    min_boundary_confidence=0.8,  # optional; default 0 disables confidence waiting
 )
 
 out = []
@@ -72,29 +113,42 @@ out += stream.flush()
 print(out)
 ```
 
+Short feeds wait for the configured lookahead. Unfinished or uncertain tokens
+remain pending until more context arrives or `flush()` ends the stream.
+`hard_split=True` can force a cut at the maximum pending-window size even below
+the confidence threshold. With `hard_split=False`, an uncommittable full window
+raises `BufferError` when further input would overflow; the failed feed leaves
+the wrapper buffers unchanged. All emitted pieces preserve the input text.
+Chunked results can differ from full-text decoding because context is bounded.
+
 ## Benchmarks (local run)
 
 Reproduce and write `reports/benchmark_report.{json,md}`:
 
 ```bash
-python3 -c "from spiralreality_AIT_onepass_aifcore_integrated.integrated.benchmark import run_benchmark; run_benchmark(output_dir='reports', max_samples=12, seed=5042)"
+python3 -c "from spiralreality_AIT_onepass_aifcore_integrated.integrated.benchmark import run_benchmark; run_benchmark(output_dir='reports', max_samples=None, seed=5042)"
 ```
 
-Example output (`max_samples=12`, `seed=5042`, reflective English subset on Apple Silicon):
+The benchmark groups exact duplicates, balances sample caps across languages,
+and scores only held-out text. Internal early stopping uses a separate portion
+of the training pool. Reports include partition hashes, per-language F1, an
+independent whitespace/punctuation baseline, perturbations, and inference
+ablations. Context-off ablations are not separately retrained models.
 
-- Baseline Mean F1: **0.9140**
-- Encode latency (ms): mean=**26.226**, p95=**30.043**
+The earlier 0.9140 example mixed training and evaluation text; it is not a
+generalization result. The bundled corpus has only 33 synthetic examples.
+Current measurements and matched comparisons are linked in
+[the upgrade evidence](docs/upgrade-2026-10-05.md).
 
-| Setting | Mean F1 | Segment latency mean (ms) | p95 (ms) | Notes |
-| --- | --- | --- | --- | --- |
-| `context_on_aif_off` | 0.9140 | 12.253 | 13.826 | default |
-| `context_on_aif_on` | 0.9050 | 65.721 | 76.829 | policy: SeekEvidence |
-| `context_off_aif_off` | 0.0000 | 2.047 | 2.352 | inference-only ablation |
-| `context_off_aif_on` | 0.0000 | 13.437 | 15.126 | inference-only ablation |
+To isolate AIF computation reuse with the same model weights and outputs:
 
-Notes:
-- `context_off_*` disables the contextual term at inference (a harsh ablation for a model trained with context on).
-- AIF policy selection adds overhead because it evaluates multiple policy-conditioned candidates.
+```bash
+python scripts/benchmark_aif_reuse.py --output reports/aif_reuse.json
+```
+
+AIF shares one encoder pass across its policy candidates and final decoding;
+the CRF still evaluates each distinct bias. The policy observation variances
+are configured assumptions, and AIF is not guaranteed to improve F1.
 
 ## Architecture (Mermaid)
 
@@ -131,7 +185,7 @@ Notes:
 - **Low-resource deployments** (containers on edge / CPU-only environments)
 
 ## Why AIT?
-- **Streaming & stability:** single-pass avoids look-behind thrash in long contexts.  
+- **Streaming & stability:** bounded windows retain provisional text while emitted segments stay committed.
 - **Interpretability:** phase/gate signals + CRF give controllable, explainable boundaries.  
 - **Small-footprint:** NumPy-first; no heavy frameworks required for inference paths.
 
@@ -149,9 +203,9 @@ This repo includes a compact Active Inference loop you can actually call during 
 ⸻
 
 ## Highlights
-- Hybrid boundary learner: learnable char embeddings → shallow tanh block → binary CRF with
-  Viterbi decoding.  The head trains jointly with the SpectralTransformerAdapter via a
-  lightweight feedback rule and keeps learnable phase bases for gating.  Optional bridges in
+- Hybrid boundary learner: learnable character-category embeddings → shallow tanh block → binary CRF with
+  Viterbi decoding, plus an optional trainable character/bigram residual. The context MLP
+  learns over fixed transformer features; phase and gate feedback remain heuristic. Optional bridges in
   `integrated/boundary_cpp.py` and `integrated/boundary_julia.py` now expose device discovery so
   bespoke C++/Julia/R implementations can advertise CUDA/Metal targets and accept `device_preference`
   hints while falling back to the pure NumPy student when unavailable.  The compiled C++ stub
@@ -165,12 +219,12 @@ This repo includes a compact Active Inference loop you can actually call during 
   compile-time CUDA/ROCm/MPS hints through `device_inventory()`/`set_device()` so GPU-capable
   targets can be selected without adding a PyTorch dependency while honouring
   `SPIRAL_TRANSFORMER_DEVICE`/`SPIRAL_DEVICE` overrides when choosing a default accelerator.
-- Streaming-friendly trainer: `StudentTrainingConfig(cache_sequences=False)` turns on
-  low-memory mode so the boundary learner rebuilds sequences on the fly, enabling massive
-  corpora to be processed in pure NumPy without staging every example in RAM. Training summaries
-  report cache usage alongside backend/device inventories so large-scale jobs remain observable.
+- Sequence caching: `StudentTrainingConfig(cache_sequences=False)` avoids keeping every
+  derived training sequence in memory. Texts and labels are still materialized. Cached
+  and uncached modes both refresh features that depend on changing phase parameters.
+  Training summaries expose partition indices, restored best-epoch metrics, and processed tokens.
 - Phase-aware encoding: curvature-derived local features are folded into the positional signal and
-  boundary probabilities seed a gated attention mask, lifting stability and F1 on reflective text.
+  boundary probabilities seed a gated attention mask.
   The encoder loader (`integrated/encoder_backends.py`) also probes for C++/Julia/R transformer
   adapters, mirroring the boundary student's backend selection so joint training can ride compiled
   kernels.
@@ -388,7 +442,9 @@ Endpoints: `/health`, `/train`, `/segment`, `/encode`, `/load`.
 
 ## Tests & CI
 ```bash
-python -m unittest discover -v
+pip install -e . pytest build
+python -m pytest -q
+python -m build
 ```
 
 The demo trains the boundary student on the multilingual corpus by default. Use
@@ -409,29 +465,33 @@ The repository ships with a reproducible workflow for building the latency/F1/ro
 1. Generate raw metrics and CSV exports:
 
    ```bash
-   python scripts/run_evaluation.py
+   python scripts/run_evaluation.py --output reports/evaluation
    ```
 
 2. Produce SVG figures (pure-Python implementation, no external plotting stack required):
 
    ```bash
-   python docs/whitepaper/generate_figures.py
+   python docs/whitepaper/generate_figures.py --input reports/evaluation/evaluation_metrics.json --output-dir reports/evaluation/figures
    ```
 
-3. Build the PDF whitepaper:
+The historical whitepaper manuscript is a separate, static draft: neither the
+commands above nor its PDF builder update the manuscript's numbers or figure
+references. After reviewing and updating that manuscript explicitly, build it:
 
    ```bash
    # Requires matplotlib >= 3.7. Install via `pip install matplotlib`.
    python docs/whitepaper/build_whitepaper.py
    ```
 
-   Alternatively, the whole pipeline can be executed with a single command:
+To deliberately regenerate the historical whitepaper data and figures in place
+(the manuscript text still requires manual review):
 
    ```bash
    make whitepaper
    ```
 
-The scripts emit artefacts into `docs/whitepaper/data/` and `docs/whitepaper/figures/`. A release
+Fresh evaluation defaults to `reports/evaluation/`; `make whitepaper` explicitly
+overwrites the derived data/figures under `docs/whitepaper/`. A release
 checklist describing publication gating, DOI management, and GitHub Release hygiene is available at
 `docs/whitepaper/release_checklist.md`.
 
