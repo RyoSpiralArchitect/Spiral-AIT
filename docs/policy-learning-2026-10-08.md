@@ -216,10 +216,13 @@ training compute. No general speed or compute-efficiency claim is made.
 
 ## Validation
 
-- 334 tests passed, one skipped, and nine subtests passed locally. Regression
+- 335 tests passed, one skipped, and nine subtests passed locally. Regression
   checks cover clipped/regularized batch invariance, finite-difference objective
   gradients, posterior-risk enumeration and ties, checkpoint/source corruption,
   development-only selection, and an offline three-language study with resume.
+- The historical reuse benchmark explicitly selects legacy EFE and NumPy on both
+  paths. Its regression check verifies identical outputs/scores and five encoder
+  passes versus one; it does not measure the posterior-risk selector's speed.
 - Source distribution and wheel built. A fresh installed-wheel environment
   outside the checkout passed batch-invariant updates, three-language checkpoint
   inference, text preservation, default posterior risk, and explicit legacy EFE.

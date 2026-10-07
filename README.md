@@ -230,7 +230,8 @@ generalization result. The bundled corpus has only 33 synthetic examples.
 Current measurements and matched comparisons are linked in
 [the upgrade evidence](docs/upgrade-2026-10-05.md).
 
-To isolate AIF computation reuse with the same model weights and outputs:
+To isolate historical AIF computation reuse with the same model weights and
+outputs, the following tool explicitly selects `legacy_efe` for both paths:
 
 ```bash
 python scripts/benchmark_aif_reuse.py --output reports/aif_reuse.json
