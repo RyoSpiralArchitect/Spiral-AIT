@@ -13,7 +13,7 @@ NumPy features, a small learned NN + CRF head, and bounded streaming windows.**
 - **Tiny & Fast:** NumPy-first, CPU-friendly; minimal deps and low memory.  
 - **Interpretable:** phase/energy style signals and gate diagnostics you can actually inspect.  
 - **CRF Head:** small NN features → CRF decoding for clean boundaries.  
-- **AIF Policy Selection (optional):** expected free energy (risk − epistemic value) over lightweight diagnostics to choose a segmentation policy (`use_aif=True`).  
+- **AIF Policy Selection (optional):** compare candidate boundaries using one shared CRF belief (`use_aif=True`); the historical EFE proxy remains available explicitly.
 - **Reproducible:** disjoint train/test evaluation, checkpoint round trips, installable wheels, and API/container demos.
 
 The current model is a research segmenter, not a pretrained language model. The
@@ -22,7 +22,8 @@ supervision. By default, transformer attention/FFN weights are random fixed
 features and phase/gate updates are heuristic. An opt-in NumPy path now trains
 the context transformer from the CRF loss. See [the earlier upgrade evidence](docs/upgrade-2026-10-05.md)
 and [the English/Japanese/Chinese experiment](docs/trilingual-context-2026-10-08.md)
-for measured results and limits.
+for measured results and limits. The [policy and learning follow-up](docs/policy-learning-2026-10-08.md)
+repairs optimizer scaling and compares document budgets and initialization seeds.
 
 ## Quick start
 
@@ -48,7 +49,7 @@ model = OnePassAIT()  # starts untrained
 model.train_student(cfg=StudentTrainingConfig(epochs=8))
 
 text = "Streaming input… chunk by chunk…"
-tokens = model.segment_text(text, use_aif=True)  # EFE-based policy selection (optional)
+tokens = model.segment_text(text, use_aif=True)  # shared-posterior policy selection (optional)
 print(tokens)
 ```
 
@@ -85,6 +86,17 @@ Native encoders without the backward interface reject this option explicitly.
 In the completed small-budget PUD pilot, this option slightly reduced F1 in all
 three languages. It remains experimental; the report records the negative result
 alongside calibration and streaming measurements.
+The subsequent [repair comparison](docs/policy-learning-2026-10-08.md) improves
+the fixed-encoder baseline and finds additional Japanese/Chinese gains from
+encoder learning at its largest training budget. Those results still use the
+previously inspected PUD data and require independent-corpus confirmation.
+
+NumPy training now averages the data gradient and adds the reported L2 penalty
+**before** global clipping. Duplicating a batch's mean gradient therefore leaves
+the optimizer step unchanged, including regularization. Training summaries use
+`optimizer_contract="mean_nll_l2_then_global_clip_v2"` and report gradient norms
+and clipping counts per epoch. Existing checkpoint predictions are unchanged;
+retraining can differ. Native optimizer kernels are outside this correction.
 
 ```python
 result = model.segment_text("Inspect each boundary.", include_confidence=True)
@@ -95,6 +107,16 @@ print(result["boundary_probabilities"])  # one CRF marginal per interior boundar
 These marginals describe model uncertainty, not calibrated correctness.
 Confidence and AIF require the Python CRF weights; a model fitted only by an
 optional native backend must be retrained on the Python path before using them.
+
+When `use_aif=True`, `SegmentationAIFConfig(selection_mode="posterior_risk")` is
+the default: every candidate is scored against the unchanged model's marginals.
+Re-decoding collects no new evidence, so its epistemic term is zero. The selected
+candidate cannot have higher estimated boundary risk than the zero-bias candidate
+under that belief; this is not a guarantee of actual F1 improvement. Exact ties
+prefer zero bias. Optional false-positive/false-negative costs and a positive
+`marginal_temperature` control this score; fit calibration on separate data.
+Use `selection_mode="legacy_efe"` for the old Gaussian EFE proxy, including its
+policy-specific observation noise and preference targets.
 
 Checkpoints record which backend owns the fitted weights. Loading a Python
 checkpoint preserves installed native handles for later checkpoint swaps,
@@ -152,6 +174,23 @@ with the buffers.
 
 ## Benchmarks (local run)
 
+The [repair comparison](docs/policy-learning-2026-10-08.md) uses three training
+budgets and three seeds, compares the old and corrected optimizers, and selects
+encoder learning rates on development data before test evaluation:
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+  python scripts/benchmark_policy_learning.py --prepare-only \
+  --output .cache/my-policy-learning-study
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+  python scripts/benchmark_policy_learning.py --workers 3 \
+  --output .cache/my-policy-learning-study
+```
+
+It requires the pinned source cache (or an explicit `--download`) and the
+reference Git commit named in its config. This is an exploratory follow-up on
+the previously inspected PUD data; independent-corpus confirmation remains open.
+
 The three-language pilot pins PUD r2.18 sources, preserves document/translation
 groups across ten folds, and compares frozen versus supervised context features.
 Raw data, licenses, checkpoints, and detailed fold receipts stay in the local
@@ -170,6 +209,9 @@ contract requires a new output directory. Completed matching folds can be
 resumed. This is a custom, small-training-budget cross-validation experiment
 on translated PUD text, not the official CoNLL test score or a production
 quality claim. [Protocol, attribution, and results](docs/trilingual-context-2026-10-08.md).
+To reproduce the **historical** published pilot exactly, use commit
+`76ac1ebc8a3af0da42a7537baab0e021b612a0c9`; its source hashes precede the optimizer
+and default policy changes above. A new run on current code is a new experiment.
 
 Reproduce and write `reports/benchmark_report.{json,md}`:
 
@@ -195,8 +237,9 @@ python scripts/benchmark_aif_reuse.py --output reports/aif_reuse.json
 ```
 
 AIF shares one encoder pass across its policy candidates and final decoding;
-the CRF still evaluates each distinct bias. The policy observation variances
-are configured assumptions, and AIF is not guaranteed to improve F1.
+the CRF still evaluates each distinct bias. Posterior-risk scoring also decodes
+the candidates. Historical timing receipts apply to their pinned implementation;
+neither the new score nor the explicit legacy EFE mode guarantees better F1.
 
 ## Architecture (Mermaid)
 
@@ -237,11 +280,13 @@ are configured assumptions, and AIF is not guaranteed to improve F1.
 - **Interpretability:** phase/gate signals + CRF give controllable, explainable boundaries.  
 - **Small-footprint:** NumPy-first; no heavy frameworks required for inference paths.
 
-## Active Inference (implemented, minimal)
-This repo includes a compact Active Inference loop you can actually call during segmentation:
-- **Generative model:** policy-conditioned observation model over segmentation diagnostics.
-- **Expected Free Energy (EFE):** risk vs epistemic value (uncertainty reduction).
-- **Policy selection:** evaluates candidate policies and applies the minimum-EFE choice (`segment_text(..., use_aif=True)`).
+## Policy scoring during segmentation
+
+`segment_text(..., use_aif=True)` compares candidate decodes using expected
+boundary error under a shared CRF belief. It collects no new observation and
+assigns no epistemic reward. The Gaussian belief/EFE components remain available
+for other research loops, and the earlier segmentation proxy can be requested
+with `SegmentationAIFConfig(selection_mode="legacy_efe")`.
 
 ## Positioning (vs spaCy / fastText / tiny BERT)
 - **Not a full NLP pipeline**: SpiralReality-AIT is a boundary-focused segmenter with streaming constraints and interpretable signals, not a general-purpose POS/NER stack.
@@ -253,7 +298,9 @@ This repo includes a compact Active Inference loop you can actually call during 
 ## Highlights
 - Hybrid boundary learner: learnable character-category embeddings → shallow tanh block → binary CRF with
   Viterbi decoding, plus an optional trainable character/bigram residual. The context MLP
-  learns over fixed transformer features; phase and gate feedback remain heuristic. Optional bridges in
+  learns over transformer features, optionally training the NumPy transformer too;
+  phase feedback remains heuristic and encoder-gate feedback is heuristic only in
+  the fixed-transformer path. Optional bridges in
   `integrated/boundary_cpp.py` and `integrated/boundary_julia.py` now expose device discovery so
   bespoke C++/Julia/R implementations can advertise CUDA/Metal targets and accept `device_preference`
   hints while falling back to the pure NumPy student when unavailable.  The compiled C++ stub
