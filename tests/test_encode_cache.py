@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from spiralreality_AIT_onepass_aifcore_integrated.integrated.onepass_ait import OnePassAIT
 
@@ -63,3 +64,61 @@ def test_empty_encoding_clears_previous_diagnostics_and_keeps_metadata():
     assert empty["gate_mask"].shape == (0, 0)
     for key, value in model.student.backend_metadata().items():
         assert empty[key] == value
+
+
+def test_encode_cache_evicts_least_recently_used_entries(monkeypatch):
+    model = OnePassAIT(latent_dim=8, encoder_layers=1, encoder_heads=2, encode_cache_max_entries=2)
+    model.student.use_encoder_context = False
+    original = model.encoder.forward
+    calls = []
+
+    def counted_forward(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(model.encoder, "forward", counted_forward)
+    first = model.encode("first")
+    model.encode("other")
+    model.encode("first")  # Refresh the first entry's recency.
+    model.encode("third")
+    assert list(model._encode_cache) == ["first", "third"]
+    assert len(calls) == 3
+    model.encode("other")  # Evicted entries are computed again.
+    assert len(calls) == 4
+    np.testing.assert_array_equal(model.encode("first")["H"], first["H"])
+
+
+def test_encode_cache_byte_budget_includes_attention_and_skips_oversized_entries():
+    probe = OnePassAIT(latent_dim=8, encoder_layers=2, encoder_heads=2)
+    probe.encode("alpha")
+    entry = probe._encode_cache["alpha"]
+    payload_bytes = sum(array.nbytes for array in entry.values())
+    attention_bytes = sum(array.nbytes for key, array in entry.items() if key.startswith("_attention_"))
+    assert attention_bytes > 0
+    model = OnePassAIT(latent_dim=8, encoder_layers=2, encoder_heads=2,
+                       encode_cache_max_bytes=2 * payload_bytes - 1)
+    for text in ("alpha", "bravo", "third"):
+        model.encode(text)
+        # Omitting attention from accounting would incorrectly admit two entries.
+        assert list(model._encode_cache) == [text]
+        assert sum(array.nbytes for arrays in model._encode_cache.values() for array in arrays.values()) == payload_bytes
+    oversized = "too long to retain in this small cache"
+    uncached = model.encode(oversized)
+    assert uncached["H"].shape == (len(oversized), 8)
+    assert list(model._encode_cache) == ["third"]
+
+
+@pytest.mark.parametrize("option", ["encode_cache_max_entries", "encode_cache_max_bytes"])
+def test_zero_cache_budget_disables_retention(option):
+    model = OnePassAIT(latent_dim=8, encoder_layers=1, encoder_heads=2, **{option: 0})
+    first = model.encode("recompute")
+    second = model.encode("recompute")
+    assert not model._encode_cache
+    np.testing.assert_array_equal(first["H"], second["H"])
+
+
+@pytest.mark.parametrize("option", ["encode_cache_max_entries", "encode_cache_max_bytes"])
+@pytest.mark.parametrize("invalid", [-1, 0.5, True])
+def test_cache_budgets_must_be_nonnegative_integers(option, invalid):
+    with pytest.raises(ValueError, match="non-negative integer"):
+        OnePassAIT(**{option: invalid})

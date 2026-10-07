@@ -77,6 +77,15 @@ both native weights and a Python-context flag, or multiple native heads, are
 ambiguous and are rejected. Migrate those files only with verified training
 provenance; the old context flag alone does not identify the trained backend.
 
+`encode()` keeps a least-recently-used cache with at most 16 entries and
+32 MiB of NumPy array payloads, including attention diagnostics. Configure
+`OnePassAIT(encode_cache_max_entries=16, encode_cache_max_bytes=32 * 1024 * 1024)`
+to change these limits; either limit set to zero disables retention. A result
+larger than the byte budget is returned without caching. These limits cover
+retained cache arrays, not peak inference memory, Python object overhead, or
+the current result/diagnostics. Cache policy is local to the instance and is
+not part of a model checkpoint.
+
 **One-command demo (compose)**  
 ```bash
 # if docker-compose.yml is provided

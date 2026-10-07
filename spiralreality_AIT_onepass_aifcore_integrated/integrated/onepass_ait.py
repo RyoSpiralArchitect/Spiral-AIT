@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import math
+import operator
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -69,7 +71,18 @@ class OnePassAIT:
         *,
         encoder_layers: int = 6,
         encoder_heads: int = 4,
+        encode_cache_max_entries: int = 16,
+        encode_cache_max_bytes: int = 32 * 1024 * 1024,
     ):
+        for name, limit in (("encode_cache_max_entries", encode_cache_max_entries),
+                            ("encode_cache_max_bytes", encode_cache_max_bytes)):
+            try:
+                validated = operator.index(limit)
+            except TypeError as exc:
+                raise ValueError(f"{name} must be a non-negative integer") from exc
+            if isinstance(limit, bool) or validated < 0:
+                raise ValueError(f"{name} must be a non-negative integer")
+            setattr(self, f"_{name}", validated)
         self.latent_dim = latent_dim
         self.rng = np.random.default_rng(seed)
         self.policies = ["ProbeMotivation", "ProbeReliability", "SeekEvidence", "DecideNow"]
@@ -101,7 +114,7 @@ class OnePassAIT:
         self.last_gate_trace: List[float] = []
         self.last_attention: List[np.ndarray] = []
         self.last_gate_mask: Optional[np.ndarray] = None
-        self._encode_cache: Dict[str, Dict[str, np.ndarray]] = {}
+        self._encode_cache: OrderedDict[str, Dict[str, np.ndarray]] = OrderedDict()
         self._last_segment_metadata: Dict[str, object] = {}
 
     def train_student(
@@ -245,6 +258,7 @@ class OnePassAIT:
             return result
         if text in self._encode_cache:
             cached = self._encode_cache[text]
+            self._encode_cache.move_to_end(text)
             result = {
                 key: value.copy() for key, value in cached.items()
                 if not key.startswith("_attention_")
@@ -293,16 +307,28 @@ class OnePassAIT:
             "phase_local": phase_local,
             "gate_mask": gate_mask,
         }
-        cache_entry: Dict[str, np.ndarray] = {}
-        for key, value in result.items():
-            arr = np.array(value)
-            arr_copy = arr.copy() if hasattr(arr, "copy") else np.array(value)
-            cache_entry[key] = arr_copy
-        for index, attn in enumerate(self.last_attention):
-            cache_entry[f"_attention_{index}"] = attn.copy()
-        self._encode_cache[text] = cache_entry
+        self._cache_encoding(text, result)
         result.update(self.student.backend_metadata())
         return result
+
+    def _cache_encoding(self, text: str, result: Dict[str, np.ndarray]) -> None:
+        if not self._encode_cache_max_entries or not self._encode_cache_max_bytes:
+            return
+        arrays = dict(result)
+        arrays.update({f"_attention_{index}": attn for index, attn in enumerate(self.last_attention)})
+        entry_bytes = sum(int(array.nbytes) for array in arrays.values())
+        # Decide before copying large attention matrices. Oversized results
+        # remain usable, but do not displace reusable smaller cache entries.
+        if entry_bytes > self._encode_cache_max_bytes:
+            return
+        retained_bytes = sum(int(array.nbytes) for entry in self._encode_cache.values() for array in entry.values())
+        while self._encode_cache and (
+            len(self._encode_cache) >= self._encode_cache_max_entries
+            or retained_bytes + entry_bytes > self._encode_cache_max_bytes
+        ):
+            _, evicted = self._encode_cache.popitem(last=False)
+            retained_bytes -= sum(int(array.nbytes) for array in evicted.values())
+        self._encode_cache[text] = {key: array.copy() for key, array in arrays.items()}
 
     def _phase_positional(self, phase_local: np.ndarray) -> np.ndarray:
         if hasattr(phase_local, "tolist"):
