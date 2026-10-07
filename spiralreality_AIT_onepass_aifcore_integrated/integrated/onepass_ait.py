@@ -73,7 +73,10 @@ class OnePassAIT:
         encoder_heads: int = 4,
         encode_cache_max_entries: int = 16,
         encode_cache_max_bytes: int = 32 * 1024 * 1024,
+        encoder_backend: str = "auto",
     ):
+        if encoder_backend not in ("auto", "numpy"):
+            raise ValueError("encoder_backend must be 'auto' or 'numpy'")
         for name, limit in (("encode_cache_max_entries", encode_cache_max_entries),
                             ("encode_cache_max_bytes", encode_cache_max_bytes)):
             try:
@@ -92,7 +95,7 @@ class OnePassAIT:
         self.student = BoundaryStudent(self.phase, seed=seed)
         self.encoder_handle: Optional[ExternalEncoderHandle] = load_external_adapter(
             latent_dim, int(encoder_layers), seed
-        )
+        ) if encoder_backend == "auto" else None
         if self.encoder_handle is not None:
             self.encoder = self.encoder_handle.impl
         else:

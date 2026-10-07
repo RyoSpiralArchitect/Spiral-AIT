@@ -1,2 +1,4 @@
 # Keep full experiment receipts available without overwhelming source reviews.
 reports/upgrade-2026-10-05/*.json linguist-generated=true
+reports/trilingual-context-2026-10-08/*.json linguist-generated=true
+reports/trilingual-context-2026-10-08/*.jsonl linguist-generated=true

@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "dataset": "Universal Dependencies Parallel Universal Dependencies",
+  "upstream_partition": "test",
+  "sources": [
+    {
+      "language": "en",
+      "repository": "https://github.com/UniversalDependencies/UD_English-PUD",
+      "revision": "e173a1be1b442faf34e7d5a502189ad5d9d1e197",
+      "release": "r2.18",
+      "license": "CC-BY-SA-3.0",
+      "license_url": "https://creativecommons.org/licenses/by-sa/3.0/",
+      "files": {
+        "en_pud-ud-test.conllu": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_English-PUD/e173a1be1b442faf34e7d5a502189ad5d9d1e197/en_pud-ud-test.conllu",
+          "sha256": "c80584f2bc2b31d5bada78a1136f9feec7ac49e5e18898db02dea434b5b8f0aa",
+          "bytes": 1386858
+        },
+        "README.md": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_English-PUD/e173a1be1b442faf34e7d5a502189ad5d9d1e197/README.md",
+          "sha256": "9558eb70a6565a40e2ecf06d0f38c9f6117de0f0f8bc5021805bdce51ee0d67f",
+          "bytes": 6986
+        },
+        "LICENSE.txt": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_English-PUD/e173a1be1b442faf34e7d5a502189ad5d9d1e197/LICENSE.txt",
+          "sha256": "b278eb53fe50b8bb7fa0d90fb8536c35fdcaa80f9d63812cb51db539555d2a89",
+          "bytes": 19556
+        }
+      }
+    },
+    {
+      "language": "ja",
+      "repository": "https://github.com/UniversalDependencies/UD_Japanese-PUD",
+      "revision": "4abd575c57bfa125dd4bc564f2ceb8973bbbf422",
+      "release": "r2.18",
+      "license": "CC-BY-SA-3.0",
+      "license_url": "https://creativecommons.org/licenses/by-sa/3.0/",
+      "files": {
+        "ja_pud-ud-test.conllu": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Japanese-PUD/4abd575c57bfa125dd4bc564f2ceb8973bbbf422/ja_pud-ud-test.conllu",
+          "sha256": "7ac51383189bdf5513102f9f8ac7ee1b967d5449f8c2dc1a9108fa21a8f1a688",
+          "bytes": 6995202
+        },
+        "README.md": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Japanese-PUD/4abd575c57bfa125dd4bc564f2ceb8973bbbf422/README.md",
+          "sha256": "3dd0a9634d25eb76ff67959f91be63115c8bcd122f003ebbebf9b0c276d000b9",
+          "bytes": 5824
+        },
+        "LICENSE.txt": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Japanese-PUD/4abd575c57bfa125dd4bc564f2ceb8973bbbf422/LICENSE.txt",
+          "sha256": "b278eb53fe50b8bb7fa0d90fb8536c35fdcaa80f9d63812cb51db539555d2a89",
+          "bytes": 19556
+        }
+      }
+    },
+    {
+      "language": "zh",
+      "repository": "https://github.com/UniversalDependencies/UD_Chinese-PUD",
+      "revision": "7b54411fb8cec041c4f8794413e08878605792f3",
+      "release": "r2.18",
+      "license": "CC-BY-SA-3.0",
+      "license_url": "https://creativecommons.org/licenses/by-sa/3.0/",
+      "files": {
+        "zh_pud-ud-test.conllu": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Chinese-PUD/7b54411fb8cec041c4f8794413e08878605792f3/zh_pud-ud-test.conllu",
+          "sha256": "e12582af2e2bbc2e27155ca7dc12b6fc4a037dbc716e1f805d67e34ffb2596b3",
+          "bytes": 2199911
+        },
+        "README.md": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Chinese-PUD/7b54411fb8cec041c4f8794413e08878605792f3/README.md",
+          "sha256": "4abc2a54f3b38f8da61c9a751f26d8e3292c99461e9e7fe28b6ad545d3fbd4e7",
+          "bytes": 5743
+        },
+        "LICENSE.txt": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Chinese-PUD/7b54411fb8cec041c4f8794413e08878605792f3/LICENSE.txt",
+          "sha256": "b278eb53fe50b8bb7fa0d90fb8536c35fdcaa80f9d63812cb51db539555d2a89",
+          "bytes": 19556
+        }
+      }
+    }
+  ],
+  "notice": "Provider-distributed CC-BY-SA-3.0 text/translations and annotations; upstream README retains the underlying-text rights caveat. Source material stays in the local cache. A custom document-grouped cross-validation protocol is not the official CoNLL test score."
+}

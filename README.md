@@ -17,10 +17,12 @@ NumPy features, a small learned NN + CRF head, and bounded streaming windows.**
 - **Reproducible:** disjoint train/test evaluation, checkpoint round trips, installable wheels, and API/container demos.
 
 The current model is a research segmenter, not a pretrained language model. The
-character-category NN, context MLP, and CRF learn from supervision. Transformer
-attention/FFN weights are random fixed features; phase planes and encoder gate
-scalars use heuristic updates. See [the upgrade evidence](docs/upgrade-2026-10-05.md)
-for measured results and remaining limits.
+character-category NN, context MLP, lexical residual, and CRF learn from
+supervision. By default, transformer attention/FFN weights are random fixed
+features and phase/gate updates are heuristic. An opt-in NumPy path now trains
+the context transformer from the CRF loss. See [the earlier upgrade evidence](docs/upgrade-2026-10-05.md)
+and [the English/Japanese/Chinese experiment](docs/trilingual-context-2026-10-08.md)
+for measured results and limits.
 
 ## Quick start
 
@@ -59,6 +61,30 @@ Enable the experimental learned character/bigram residual with
 category head with a fixed-size signed hash table, uses the Python CRF path,
 and is included in checkpoints. The default remains disabled; evaluate it on
 your own held-out data before adoption.
+
+To learn the contextual transformer as well, explicitly select the NumPy
+encoder and enable `train_context_encoder`. Pass your aligned `texts` and
+`segments`, as above:
+
+```python
+model = OnePassAIT(latent_dim=16, encoder_layers=1, encoder_heads=2,
+                   encoder_backend="numpy")
+model.train_student(texts, segments, cfg=StudentTrainingConfig(
+    train_context_encoder=True, encoder_lr=0.01,
+    phase_lr=0.0, lexical_buckets=4096,
+))
+```
+
+This differentiates the CRF loss through the context MLP, attention, feed-forward
+layers, layer normalization, and learned gates. Gradients are accumulated by
+batch and included in global clipping; early-stopping snapshots and checkpoints
+contain the learned encoder weights. The supervised path replaces heuristic
+encoder-gate updates. `phase_lr=0` also freezes phase updates for a controlled
+comparison. Character input vectors and phase signals are not differentiated.
+Native encoders without the backward interface reject this option explicitly.
+In the completed small-budget PUD pilot, this option slightly reduced F1 in all
+three languages. It remains experimental; the report records the negative result
+alongside calibration and streaming measurements.
 
 ```python
 result = model.segment_text("Inspect each boundary.", include_confidence=True)
@@ -120,8 +146,30 @@ the confidence threshold. With `hard_split=False`, an uncommittable full window
 raises `BufferError` when further input would overflow; the failed feed leaves
 the wrapper buffers unchanged. All emitted pieces preserve the input text.
 Chunked results can differ from full-text decoding because context is bounded.
+`stream.forced_split_count` counts committed capacity-forced cuts, survives
+`flush()`, and is cleared by `reset()`. Failed feeds/flushes roll back the count
+with the buffers.
 
 ## Benchmarks (local run)
+
+The three-language pilot pins PUD r2.18 sources, preserves document/translation
+groups across ten folds, and compares frozen versus supervised context features.
+Raw data, licenses, checkpoints, and detailed fold receipts stay in the local
+cache; the repository stores hashes, compact paired scores, and aggregate
+results. Downloads occur only with the explicit `--download` flag.
+
+```bash
+python scripts/benchmark_trilingual.py --download --prepare-only \
+  --output .cache/my-trilingual-run
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+  python scripts/benchmark_trilingual.py --output .cache/my-trilingual-run
+```
+
+The prepared plan locks code, data, configuration, and document folds. A changed
+contract requires a new output directory. Completed matching folds can be
+resumed. This is a custom, small-training-budget cross-validation experiment
+on translated PUD text, not the official CoNLL test score or a production
+quality claim. [Protocol, attribution, and results](docs/trilingual-context-2026-10-08.md).
 
 Reproduce and write `reports/benchmark_report.{json,md}`:
 

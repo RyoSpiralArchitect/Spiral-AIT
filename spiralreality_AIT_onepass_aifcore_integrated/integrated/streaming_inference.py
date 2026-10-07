@@ -79,21 +79,28 @@ class ChunkedStreamingSegmenter:
         self.min_boundary_confidence = float(min_boundary_confidence)
         self._context: str = ""
         self._pending: str = ""
+        self._forced_split_count = 0
 
     @property
     def pending_text(self) -> str:
         return self._pending
 
+    @property
+    def forced_split_count(self) -> int:
+        """Committed capacity-forced cuts since reset; preserved across flush."""
+        return self._forced_split_count
+
     def reset(self) -> None:
         self._context = ""
         self._pending = ""
+        self._forced_split_count = 0
 
     def feed(self, chunk: str) -> List[str]:
         if not isinstance(chunk, str):
             raise TypeError("chunk must be a string")
         if not chunk:
             return []
-        initial = self._context, self._pending
+        initial = self._context, self._pending, self._forced_split_count
         out: List[str] = []
         offset = 0
         try:
@@ -109,19 +116,19 @@ class ChunkedStreamingSegmenter:
                 offset = end
                 out.extend(self._drain(final=False))
         except BaseException:
-            self._context, self._pending = initial
+            self._context, self._pending, self._forced_split_count = initial
             raise
         return out
 
     def flush(self, *, reset: bool = True) -> List[str]:
-        initial = self._context, self._pending
+        initial = self._context, self._pending, self._forced_split_count
         try:
             out = self._drain(final=True)
         except BaseException:
-            self._context, self._pending = initial
+            self._context, self._pending, self._forced_split_count = initial
             raise
         if reset:
-            self.reset()
+            self._context = self._pending = ""
         return out
 
     def _context_text(self) -> str:
@@ -211,6 +218,7 @@ class ChunkedStreamingSegmenter:
             forced = work_text[context_len:commit_limit]
             if forced:
                 committed = [forced]
+                self._forced_split_count += 1
 
         if not committed:
             return []
