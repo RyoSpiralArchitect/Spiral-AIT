@@ -553,7 +553,8 @@ class BoundaryStudent:
         vec = window_vec if hasattr(window_vec, "shape") else np.array(window_vec, dtype=self.dtype)
         return self.W_window @ vec + self.b_window
 
-    def _forward_sequence(self, seq: BoundarySequence, *, retain_encoder_cache: bool = False) -> Tuple[List[float], List[Dict[str, object]]]:
+    def _forward_sequence(self, seq: BoundarySequence, *, retain_encoder_cache: bool = False,
+                          include_context_summary: bool = False) -> Tuple[List[float], List[Dict[str, object]]]:
         # The basis changes during training and can be restored by early stopping.
         # Refresh cached train and validation features using the same basis as inference.
         self._refresh_phase_features(seq)
@@ -613,6 +614,8 @@ class BoundaryStudent:
             )
         if caches and encoder_tape is not None:
             caches[0]["encoder_tape"] = encoder_tape
+        if caches and include_context_summary and ctx_H is not None:
+            caches[0]["context_summary"] = np.mean(np.tanh(ctx_H), axis=0)
         return logits, caches
 
     # ------------------------------------------------------------------
@@ -1463,6 +1466,33 @@ class BoundaryStudent:
         seq = self.build_sequences([text], [[text]])[0]
         logits, _ = self._forward_sequence(seq)
         return [float(v) for v in logits]
+
+    def observe_sequence(self, text: str) -> Dict[str, object]:
+        """Inspect one received window with a single contextual forward pass.
+
+        The context vector pools bounded encoder states across the whole window.
+        It is a feature observation, not a ground-truth label or
+        an independent sensor measurement. No parameters or phase history learn
+        from this inspection; a controller must deliver observations explicitly.
+        """
+        self._require_python_head()
+        if not isinstance(text, str):
+            raise TypeError("text must be a string")
+        dimension = int(self._encoder_model_dim() or self.phase.dim)
+        context = np.zeros(dimension, dtype=float)
+        curvature = 0.0
+        logits = []
+        if len(text) > 1:
+            sequence = self.build_sequences([text], [[text]])[0]
+            logits, caches = self._forward_sequence(sequence, include_context_summary=True)
+            if caches and "context_summary" in caches[0]:
+                context = caches[0]["context_summary"]
+            curvature = float(np.mean(np.abs(sequence.curvature)))
+        decoded = self.decode_with_logit_bias(text, logits=logits)
+        probabilities = self.boundary_probs_with_logit_bias(text, logits=logits)
+        return {"tokens": decoded["tokens"], "boundary_probabilities": probabilities,
+                "context_vector": context, "mean_curvature": curvature,
+                **self.backend_metadata()}
 
     def _resolve_logits(self, text: str, logits: Optional[Sequence[float]]) -> List[float]:
         self._require_python_head()

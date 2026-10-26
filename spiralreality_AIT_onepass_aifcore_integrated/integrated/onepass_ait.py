@@ -736,6 +736,16 @@ class OnePassAIT:
             min_boundary_confidence=min_boundary_confidence,
         )
 
+    def active_text_session(self, channel, config=None):
+        """Create a pull-based observer/actor with a frozen acquisition channel.
+
+        Planning cannot read the source. Delivered characters update the separate
+        latent world model and phase history; CRF labels are never self-generated
+        training targets. See ``active_context`` for the source/decision protocol.
+        """
+        from .active_context import ActiveTextSession
+        return ActiveTextSession(self, channel, config=config)
+
     def gate_diagnostics(self) -> GateDiagnostics:
         strengths = []
         for attn in self.last_attention:

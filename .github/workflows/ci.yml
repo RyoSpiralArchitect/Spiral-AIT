@@ -44,4 +44,16 @@ jobs:
           assert selection["selection_mode"] == "posterior_risk"
           assert selection["selected_risk"] <= selection["baseline_risk"]
           assert all(row["epistemic"] == 0 for row in selection["candidates"])
+          from copy import deepcopy
+          from spiralreality_AIT_onepass_aifcore_integrated.integrated.acquisition import ContextAcquisitionModel
+          from spiralreality_AIT_onepass_aifcore_integrated.integrated.active_context import StringTextSource
+          session = m.active_text_session(ContextAcquisitionModel())
+          snapshot = deepcopy(m.state_dict())
+          assert session.plan() == session.plan()
+          assert m.state_dict() == snapshot
+          text = "Observe, then act. 文脈を読む。读取上下文。"
+          active = session.run(StringTextSource(text))
+          assert active["done"] and "".join(active["tokens"]) == text
+          assert m.last_observation_id > 0
+          assert active["metrics"]["max_window_chars_seen"] <= 96
           PY
