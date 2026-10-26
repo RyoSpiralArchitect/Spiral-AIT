@@ -25,6 +25,45 @@ and [the English/Japanese/Chinese experiment](docs/trilingual-context-2026-10-08
 for measured results and limits. The [policy and learning follow-up](docs/policy-learning-2026-10-08.md)
 repairs optimizer scaling and compares document budgets and initialization seeds.
 
+## AIT observation and action loop
+
+The optional [grounded context controller](docs/active-context-2026-10-27.md)
+can commit a token or actually acquire 4/16 more characters before deciding.
+A learned observation channel forecasts information value; delivered text updates
+boundary beliefs, phase history, and a separate latent world model. Planning
+itself cannot collect observations or train on imagined branches.
+
+```python
+from spiralreality_AIT_onepass_aifcore_integrated.integrated.active_context import (
+    ActiveContextConfig, StringTextSource,
+)
+
+# model is a contextual Python OnePassAIT, channel was fitted on real labeled
+# prefix-extension pairs and frozen before this replay.
+session = model.active_text_session(channel, ActiveContextConfig())
+result = session.run(StringTextSource("When evidence changes, revise. 文脈を読む。"))
+print(result["tokens"])
+print(result["metrics"]["policy_counts"])
+```
+
+This uses marginal-MAP boundary decisions under the maintained belief, with
+bounded windows and explicit source receipts. Unsupported channel cells claim
+zero expected gain; raw CRF posteriors are not multiplied as independent evidence.
+Real entropy can rise after a read. Phase/error drives are control heuristics,
+and model-based information value does not guarantee higher F1.
+
+The completed seven-mode pilot shows learned acquisition improving Japanese and
+Chinese over immediate commits, with additional waiting and CPU cost. It does
+not establish extra accuracy from online world fitting or phase modulation.
+See [the full results, protocol, and replay traces](docs/active-context-2026-10-27.md).
+The regular `segment_text()` call remains the direct segmentation API.
+
+Generic AIF execution now requires an explicit `ExecutionObservation` or
+execution callback. `predict_next()` is a pure forecast; `observe_transition()`
+admits delivered transitions once. Model checkpoints retain real replay and
+phase/observation counters. The earlier latent demo labels its artificial
+environment as simulated and excludes it from real-world learning.
+
 ## Quick start
 
 > After cloning this repo:
@@ -173,6 +212,25 @@ Chunked results can differ from full-text decoding because context is bounded.
 with the buffers.
 
 ## Benchmarks (local run)
+
+The active-context study requires the pinned local checkpoint named in
+[its config](configs/active-context-pilot.json), plus the pinned corpus cache:
+
+```bash
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+  python scripts/benchmark_active_context.py --prepare-only \
+  --output .cache/active-context-pilot-v1
+OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 VECLIB_MAXIMUM_THREADS=1 \
+  python scripts/benchmark_active_context.py \
+  --output .cache/active-context-pilot-v1
+python scripts/demo_active_ait.py --study .cache/active-context-pilot-v1
+```
+
+Calibration and current cost selection use disjoint development document groups.
+The underlying checkpoint and test data were previously inspected; this is an
+exploratory mechanism/cost-quality study. Learned weights and raw corpus text
+stay local. A fresh checkout needs the exact checkpoint produced by the earlier
+comparison; substituting another checkpoint requires a new pinned study config.
 
 The [repair comparison](docs/policy-learning-2026-10-08.md) uses three training
 budgets and three seeds, compares the old and corrected optimizers, and selects
