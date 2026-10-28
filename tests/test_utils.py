@@ -22,8 +22,10 @@ def test_seeded_vector_does_not_depend_on_python_hash(monkeypatch) -> None:
     def _failing_hash(_: object) -> int:
         raise AssertionError("unexpected hash call")
 
-    monkeypatch.setattr(builtins, "hash", _failing_hash)
-    vector = seeded_vector("unit-test", dim=4)
+    # Restore the process-wide builtin before pytest hashes its own reports.
+    with monkeypatch.context() as scoped:
+        scoped.setattr(builtins, "hash", _failing_hash)
+        vector = seeded_vector("unit-test", dim=4)
     assert vector.shape == (4,)
 
 

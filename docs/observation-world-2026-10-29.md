@@ -245,6 +245,10 @@ joint Bayesian continuation and three-language source-preserving replay with
 unchanged segmentation weights. Dedicated tests also cover analytical multi-step
 joint posteriors, label/regime martingales, the null, the original-channel limit,
 planning purity, acquisition-budget feasibility, receipt retries, and partial EOF.
+CI also exposed an existing test's process-wide `hash` replacement leaking into
+pytest 9.2's report hashing. The test now restores the builtin immediately after
+the guarded call; its check that seeded features avoid Python's salted hash
+remains. This changes test isolation only, not experiment code or predictions.
 
 Evidence: [frozen plan](../reports/observation-world-2026-10-29/plan.json),
 [all aggregate results and intervals](../reports/observation-world-2026-10-29/summary.json),
