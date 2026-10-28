@@ -22,6 +22,14 @@ from .streaming_inference import ChunkedStreamingSegmenter
 from .utils import is_punct, is_space, seeded_vector, sigmoid, unit
 
 
+# Retain the original callables so class-level hooks, as well as per-instance
+# hooks, use conservative rollback rather than the append-only fast path.
+_STOCK_DYNAMICS_METHODS = {
+    name: getattr(LatentDynamicsModel, name)
+    for name in ("record", "should_train", "train", "_loss_and_gradients", "_validate_config", "_inputs", "_vector")
+}
+
+
 @dataclass
 class GateDiagnostics:
     gate_trace: List[float]
@@ -446,17 +454,38 @@ class OnePassAIT:
         observed = self.dynamics._vector(observed_mu, self.latent_dim, "observed_mu").copy()
         training = {"trained": False}
         if not simulated:
-            old_dynamics = deepcopy(self.dynamics)
-            old_hist = deepcopy(self._phi_hist)
+            # Stock recording appends a new row, and fitting only reads existing
+            # replay arrays. Stage the list rather than copying every replay
+            # vector on every delivered observation. Customized implementations
+            # retain the conservative full checkpoint used by the public hook.
+            stock_dynamics = type(self.dynamics) is LatentDynamicsModel and all(
+                getattr(getattr(self.dynamics, name), "__func__", getattr(self.dynamics, name)) is original
+                for name, original in _STOCK_DYNAMICS_METHODS.items()
+            )
+            stock_phases = getattr(self.update_global_phases, "__func__", None) is _STOCK_PHASE_UPDATE
+            staged = stock_dynamics and stock_phases
+            old_dynamics = self.dynamics.__dict__.copy() if staged else deepcopy(self.dynamics).__dict__
+            replay = self.dynamics.buffer.copy() if staged else None
+            old_hist = {key: values.copy() for key, values in self._phi_hist.items()}
             old_mix, old_time = self.R3_mix, self.R2_time
+            old_parameters = None
             try:
+                if staged:
+                    self.dynamics.buffer = replay
                 self.dynamics.record(mu, unit(self.policy_vecs[policy]), ctx_vec, observed)
                 if train and self.dynamics.should_train():
+                    # Weight copies are needed only for a real fitting attempt,
+                    # including a failure after one or more optimizer updates.
+                    if staged:
+                        old_parameters = {name: getattr(self.dynamics, name).copy()
+                                          for name in ("W1", "b1", "W_mu", "b_mu", "W_sigma", "b_sigma")}
                     training = self.dynamics.train()
                 self.update_global_phases(observed)
             except Exception:
+                if old_parameters is not None:
+                    old_dynamics.update(old_parameters)
                 self.dynamics.__dict__.clear()
-                self.dynamics.__dict__.update(old_dynamics.__dict__)
+                self.dynamics.__dict__.update(old_dynamics)
                 self._phi_hist, self.R3_mix, self.R2_time = old_hist, old_mix, old_time
                 raise
         self.last_observation_id = int(identifier)
@@ -838,3 +867,6 @@ class OnePassAIT:
         self.last_gate_trace = []
         self.last_attention = []
         self.last_gate_mask = None
+
+
+_STOCK_PHASE_UPDATE = OnePassAIT.update_global_phases
