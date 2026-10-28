@@ -1,7 +1,8 @@
-"""Compare shared AIF features with the former five-pass orchestration.
+"""Compare shared legacy-EFE features with the former five-pass orchestration.
 
 Both paths use the same current weights and CRF. This isolates inference reuse;
-it is not a whole-revision benchmark or evidence of better segmentation quality.
+it does not measure the new posterior-risk selector, whole-revision performance,
+or segmentation quality.
 """
 from __future__ import annotations
 
@@ -30,15 +31,17 @@ def run(repeats: int = 9) -> dict:
     files = ["boundary.py", "onepass_ait.py", "encoder.py", "encoder_backends.py", "phase.py"]
     package = ROOT / "spiralreality_AIT_onepass_aifcore_integrated" / "integrated"
     def fingerprints():
-        return {name: hashlib.sha256((package / name).read_bytes()).hexdigest() for name in files}
+        return {**{name: hashlib.sha256((package / name).read_bytes()).hexdigest() for name in files},
+                "benchmark_aif_reuse.py": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
     before = fingerprints()
-    model = OnePassAIT(latent_dim=32, seed=5042)
+    cfg = SegmentationAIFConfig(selection_mode="legacy_efe")
+    model = OnePassAIT(latent_dim=32, seed=5042, encoder_backend="numpy")
     if model.encoder_backend_name() != "spectral-numpy:cpu":
         raise RuntimeError("This matched CPU benchmark requires the NumPy encoder")
     model.train_student(TRAIN_TEXTS[:3], cfg=StudentTrainingConfig(
         epochs=3, validation_split=0.0, phase_lr=0.3,
     ))
-    reference = OnePassAIT(latent_dim=32, seed=5042)
+    reference = OnePassAIT(latent_dim=32, seed=5042, encoder_backend="numpy")
     reference.load_state_dict(model.state_dict())
     original_probs = reference.student.boundary_probs_with_logit_bias
 
@@ -50,13 +53,13 @@ def run(repeats: int = 9) -> dict:
     def recomputed(text):
         # Four independent forward passes for policy marginals, then a fifth
         # for the selected Viterbi path, matching the old orchestration.
-        selection = reference._select_policy_from_logits(text, (), None)
-        bias = SegmentationAIFConfig().logit_bias_by_policy[selection["chosen_policy"]]
+        selection = reference._select_policy_from_logits(text, (), cfg)
+        bias = cfg.logit_bias_by_policy[selection["chosen_policy"]]
         result = reference.student.decode_with_logit_bias(text, bias)
         return {**result, "chosen_policy": selection["chosen_policy"], "aif": selection}
 
     def shared(text):
-        return model.segment_text(text, use_aif=True, return_metadata=True)
+        return model.segment_text(text, use_aif=True, aif_cfg=cfg, return_metadata=True)
 
     counts = {"recomputed": 0, "shared": 0}
     for name, instance in (("recomputed", reference), ("shared", model)):
@@ -99,6 +102,7 @@ def run(repeats: int = 9) -> dict:
         raise RuntimeError("Source files changed during measurement")
     return {
         "method": "matched_current_weights_recomputed_vs_shared_AIF_features",
+        "selection_mode": cfg.selection_mode,
         "scope": "Local CPU inference only; no quality or whole-revision speed claim.",
         "seed": 5042, "repeats": repeats, "warmup_per_path_per_text": 1,
         "order": "alternating", "python": platform.python_version(),

@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "study": "pud-grounded-active-context-pilot-v1",
+  "checkpoint": ".cache/policy-learning-comparison-v1/checkpoints/budget_all_seed_5042_context_lr_0.01.json",
+  "checkpoint_sha256": "9c73420a3c7fe4e9d73cc463b473b0b45c01a7111f058bbf100943136a81e783",
+  "model_seed": 5042,
+  "partition_seed": 1739,
+  "fold_count": 10,
+  "test_fold": 0,
+  "max_chars": 256,
+  "development_split_seed": 20261027,
+  "checkpoint_selection_exposure": "The original development labels were excluded from checkpoint gradient training, but were used to select its encoder learning rate in the earlier inspected PUD study.",
+  "channel": {
+    "action_chars": [4, 16],
+    "probability_edges": [0, 0.2, 0.4, 0.6, 0.8, 1],
+    "age_edges": [0, 4, 8, 16, 32],
+    "outcome_edges": [0, 0.2, 0.4, 0.6, 0.8, 1],
+    "alpha": 0.5,
+    "min_per_label": 5
+  },
+  "channel_fit": {"prefix_stride": 8, "window_stride": 64},
+  "world_warmup": {"max_transitions": 256, "seed": 5042},
+  "active": {
+    "initial_chars": 8,
+    "action_chars": [4, 16],
+    "max_window_chars": 96,
+    "context_chars": 32,
+    "max_acquisitions_per_commit": 4,
+    "horizon": 2,
+    "char_cost": 0.002,
+    "call_cost": 0.002,
+    "epistemic_weight": 0.05,
+    "phase_gain": 0.5,
+    "surprise_gain": 0.25,
+    "learn_dynamics": true,
+    "trace_limit": 256
+  },
+  "char_cost_candidates": [0.0005, 0.002, 0.01],
+  "development_utility": {"mean_wait_char_weight": 0.001, "model_calls_per_1k_char_weight": 0.0001},
+  "timing_protocol": "Episode wall time uses perf_counter around run_episode only, after the common checkpoint/model restore and before scoring/serialization. It includes runtime channel planning, inference, observation processing, and any online world fitting. Median/p95 and total seconds are local descriptive measurements, not general platform speed evidence. The predeclared development utility uses encoder-call proxies, which omit planning and online-fitting compute; lower model calls or sum(window_length squared) do not establish lower total compute or latency.",
+  "fixed_stream": {
+    "feed_chars": 8,
+    "max_window_chars": 96,
+    "lookahead_chars": 16,
+    "context_chars": 32,
+    "min_boundary_confidence": 0.8,
+    "hard_split": true
+  },
+  "protocol": "Exploratory mechanism and cost-quality comparison on previously inspected translated PUD. Split the original development document groups deterministically into disjoint channel-fit and cost-tuning halves. Fit the supervised acquisition observation channel and warm the world model on observed prefix extensions from the first half only; these texts were excluded from segmenter gradient training. The earlier checkpoint learning-rate selection already used the original development labels, so this is not untouched model-selection validation. Check channel support and one-step forecasts on the second half; use that half only to choose a shared acquisition character cost, then freeze it before the unchanged test fold. Restore the same warmed world model and unchanged segmenter for every sentence. Runtime text observations can update the world model without gold labels; the supervised acquisition channel is frozen. Active/acquisition-only/frozen-world conditions maintain a learned-channel boundary posterior after observed context; immediate/fixed streaming retain raw CRF marginals. All use the same marginal-MAP decision rule, with full-text Viterbi and full-text marginal-MAP references. The active comparison therefore tests observation-model updating plus acquisition policy, not scheduling alone; overlapping raw CRF posteriors are not multiplied as independent evidence. This is neither independent-corpus generalization nor evidence that model-based information gain equals realized information."
+}

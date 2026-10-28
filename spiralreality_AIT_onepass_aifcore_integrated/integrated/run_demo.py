@@ -10,7 +10,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, Generator, List, Optional
 
-from .aif_core import ActionSpace, ActiveInferenceAgent, AgentConfig
+from .aif_core import ActionSpace, ActiveInferenceAgent, AgentConfig, ExecutionObservation
+from .np_compat import np
 from .checkpoint import save_checkpoint
 from .gwm_bridge import AITGWMBridge
 from .multilingual import AVAILABLE_LANGUAGES
@@ -356,6 +357,16 @@ def _run(writer: Optional[_ScalarLogWriter] = None) -> None:
         goal_vec = ait.goal_vec
         cfg = AgentConfig(horizon=3, planner="cem", cem_K=6, cem_elite_frac=0.25, cem_iters=1, obs_sigma=0.6)
 
+        # This legacy demo has no external sensor/environment. Keep its toy
+        # execution explicit, and never admit synthetic targets as real replay.
+        simulated_observation_id = ait.last_observation_id
+        def simulated_environment(prior, action, context, forecast):
+            nonlocal simulated_observation_id
+            simulated_observation_id += 1
+            return ExecutionObservation(simulated_observation_id, forecast.mu.copy(),
+                                        (bridge.obs_sigma ** 2) * np.eye(ait.latent_dim),
+                                        source="legacy_demo_simulated_environment", simulated=True)
+
         agent = ActiveInferenceAgent(
             dim=ait.latent_dim,
             action_space=action_space,
@@ -364,6 +375,8 @@ def _run(writer: Optional[_ScalarLogWriter] = None) -> None:
             ctx_provider=bridge.ctx_from_prefix,
             r3_provider=bridge.r3_from_prefix,
             cfg=cfg,
+            observation_fn=simulated_environment,
+            on_observation=bridge.observe_execution,
         )
 
         log = {"train_summary": train_summary, "steps": []}
