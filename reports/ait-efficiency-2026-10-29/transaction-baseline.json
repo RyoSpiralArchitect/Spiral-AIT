@@ -1,0 +1,126 @@
+{
+  "protocol": {
+    "schema_version": 1,
+    "kind": "synthetic_observation_transaction_resource_probe",
+    "seed": 5042,
+    "latent_dim": 16,
+    "replay_rows": [
+      150,
+      2048
+    ],
+    "arrivals_per_pass": 64,
+    "untraced_repeats": 5,
+    "traced_passes": 1,
+    "train": false,
+    "policy": "SeekEvidence",
+    "scope": "Deterministic provided numeric fixtures; no text, gold labels, encoder forward, or fitting. Setup and hashes are outside timing. Five fresh-fixture untraced passes measure only delivered observation calls. A separate fresh-fixture pass measures peak Python-traced allocations; traced elapsed time is never used for speed. This is bookkeeping evidence, not end-to-end speed, process RSS, real-task accuracy, or learning efficacy."
+  },
+  "label": "baseline",
+  "package_import_verified": true,
+  "source_sha256": {
+    "spiralreality_AIT_onepass_aifcore_integrated/__init__.py": "86ba9c4b9fbe3742c4126362e027809fe5f9666a61c301f9fd5085f0f3466268",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/__init__.py": "fbdc1d6be68c889c30329d4f7a91e5f883442be19438958c989a7df813ad0576",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/_np_stub_numpy.py": "00a2ec1117d88cf7bb1f70d6c4b4254e70978e764c17f0a87e7d11b8de77ed1b",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/_np_stub_purepy.py": "652e1600efadccc2662229377cda9b8f7a436cd20886abcaa121536d0ee167aa",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/_python_numeric_backend.py": "81d17d6045d3ee36a13d00c3fb0a3f9f13b589efc542496a708ccf718010079d",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/acquisition.py": "73932779137350dcd560440432a4f1a05c992f71da34d5445e049987e091dd51",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/active_context.py": "d8e430891450b17a2f22628d4e59d26a45dacf6c990625cc2f6b1c46a39ff3b7",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/aif_core/__init__.py": "cb5fa4ecbae44d6d9322ccc87567b402813e0556da6c96ae6efef5ae71cd7faf",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/aif_core/agent.py": "9ae70352792ca9a10339285bf9e74c632616c345489663d4de5356b2a059bceb",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/aif_core/beliefs.py": "a5ee2871c4a8dc9e230754fc77722059b639f002434ca03c7f0c7edc35bdff41",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/aif_core/efe.py": "0ca30a5917b0e58325d05d1f0203dd367af667c0b63a0c70bddc047714aca2dd",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/aif_core/planning.py": "abadd4a6ff1a4d6ec37a5271ac3b62b797caa8c04166f4eb38e1e80d902210bc",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/aif_core/preferences.py": "de7afbbc97a10c81944ca0a54e709d90f1256f3674df32fb311b8ff1df32197b",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/aif_core/world_model.py": "d584de8169b44415cac42420df62b836227e2b39b71674996640840c65212b4a",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/api.py": "064124b7a6e5f5c01c1ddafe8265ff060e858d66e6551c7d4cb4d761697817f8",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/augmentation.py": "361ad7d62fb775e621e4f0414840db6d93d66d633119db98eff2a6ceb3824de1",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/benchmark.py": "fb625f79b7c6d0053cd3c9cb04d30cd0cfc81e3f19efa87050f6cbc6d2239073",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/boundary.py": "6fd6682442dea3fb4d4617394e000570cfffff3a00eedd65bf6e4e7a054d23fd",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/boundary_cpp.py": "e830f116c589a3cb436313c1cc3a3fdd18367448bff4a1e1bf992c6636153527",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/boundary_julia.py": "fec201f430d236078269dabb7d3793876dc88110251293b1cf7b99e18daaa490",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/checkpoint.py": "ed734b07908d80e85313172810e12107b008a2a9dc4a946fed604e1c0ad65b0b",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/corpus.py": "2432e56fa76535e2e862007ffae7a880f9263180cd3ba685de063dce97e8569e",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/cpp_numeric.py": "0b2a84de4ab85b8a497f4000bc63d12b1cc6a4ea0aab2b8b5d43428263e805c7",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/datasets/__init__.py": "6432a2aef6f0b15df1f5d902f24ef5dd30d4c23d913286ee2f536dfff050f264",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/dynamics.py": "ffb48a8d6400755f4fb60a4e87cf328d053145bf08cd0b73c1e7b2852504312f",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/encoder.py": "4e88dcd1fea51ef61163ddaa518815552c08aea98ccf6fc25c0a642a5297994c",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/encoder_backends.py": "3cc9bf9f9d83e0f8698f941dc02ee5d3faf8e22fbf8aece3ef1ac1f11d1b2d30",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/evaluation_metrics.py": "1b0b37cb7a02dc0d834673f498dffba1e1346f03b563a934668e41a649e24287",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/external_corpus.py": "eab39f7f17a3b99af26393020b700dfcfddeadde554f5a867e7918a770853259",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/gwm_bridge.py": "83c0ea64d97ae0f6d9904c6b949382470d7a0f4a76b8c3d5fd8b83a22527aba2",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/julia_numeric.py": "c5f9bfdb1fc3fa8b432913a3847e58656f606d48721368651f2897755e50ce2e",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/multilingual.py": "1a3b099e60819e7eccb3d6d42de999b4ee26ce289a72db9cfc95f4aa1320ea69",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/np_compat.py": "4eb8e4cfa247eb7e9c64f757f48bd2d8875ba0b2d1baafd6604fb0732cc97272",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/np_stub.py": "a9b74ff7040048c6fc55e34a9409187ad29ac9bc37ca228d44f6bc2acc8d3c13",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/observation_world.py": "6e2f2028bdba52fb1ca792cb6dee316479eead0cf2930e8e8b3f780d9f53fae4",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/onepass_ait.py": "ce9b2f275231a982b620f0c46a231985b19b75feb1a771999503f2e659e126cf",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/phase.py": "6d2b91bcc6011d23e19c70d08e05d0eafa0c012de048be7f97fb773434000d84",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/run_demo.py": "359ff47acf27f533cd16f65eb5c5f157b280adb139b8a4677c65173175ef6b10",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/streaming.py": "3a73facc2c1a3f8bbc0bfef15e2afe15246849fda2c03c15d876b2439dc1eabb",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/streaming_inference.py": "aecd61b17ebff15dd13296833b5b52751daddc4990d1bbc9036a15c8ce0db64d",
+    "spiralreality_AIT_onepass_aifcore_integrated/integrated/utils.py": "1c25a61deb2fff5f7bb3552e0b65323db97816f906919a215bca6cd3ae20bb11"
+  },
+  "probe_sha256": "c33230c2ce80bf44174f22e8aad41ec1ac0bf2a4822fb9f935433bbdd371184d",
+  "runtime": {
+    "python": "3.12.6",
+    "numpy": "2.5.3",
+    "platform": "macOS-26.4.1-arm64-arm-64bit",
+    "thread_environment": {
+      "OMP_NUM_THREADS": "1",
+      "OPENBLAS_NUM_THREADS": "1",
+      "VECLIB_MAXIMUM_THREADS": "1"
+    }
+  },
+  "results": [
+    {
+      "replay_rows": 150,
+      "untraced_ms_per_arrival": [
+        0.3798359375,
+        0.29281184375,
+        0.29337759375,
+        0.28033725,
+        0.280608078125
+      ],
+      "median_untraced_ms_per_arrival": 0.29281184375,
+      "traced_current_bytes": 55656,
+      "traced_peak_bytes": 344872,
+      "initial_state_sha256": "1da0d649a00174928c64af0698868b2a32aa98de1a7f2150be2c498d5a79ed87",
+      "final_state_sha256": "7b9be5d3cd6f730a2f345d73efc136b48bf19e289ff8f96d156eba5d25bb4daa",
+      "frozen_weight_sha256": {
+        "W1": "758d3fb742d2431472a4749c48bee136816bd2ffd8fa77a94607889bbbe3a139",
+        "b1": "a32f482159ea749801f537f8225925467645d30b2666449ac2eff1408b4fda3d",
+        "W_mu": "7c6ff91832a76e20b3159e8e5cd55fcde769ad891162f8d42004efa0a71aa81d",
+        "b_mu": "0a7f1c6cf572c55f7ade03f46ffc220ae32aa6fecb3a095611e7d6b941d7e364",
+        "W_sigma": "d595aa9549da7741bb8e71276fc49700a42147de3e6bfb057fa03bfb65aea6fd",
+        "b_sigma": "0a7f1c6cf572c55f7ade03f46ffc220ae32aa6fecb3a095611e7d6b941d7e364"
+      },
+      "recorded_observations_after": 214,
+      "retained_replay_rows_after": 214
+    },
+    {
+      "replay_rows": 2048,
+      "untraced_ms_per_arrival": [
+        2.856397125,
+        2.947353515625,
+        2.782791015625,
+        2.842248046875,
+        2.784362625
+      ],
+      "median_untraced_ms_per_arrival": 2.842248046875,
+      "traced_current_bytes": 181048,
+      "traced_peak_bytes": 2340200,
+      "initial_state_sha256": "016eaf686c0a0d040ed4aa0889be9e9e6e8b202b212e972f7caac34961018e0b",
+      "final_state_sha256": "703256ddd3e12ff5abeb0b3931c1111775662828e72edfe88a7b8015dd643218",
+      "frozen_weight_sha256": {
+        "W1": "758d3fb742d2431472a4749c48bee136816bd2ffd8fa77a94607889bbbe3a139",
+        "b1": "a32f482159ea749801f537f8225925467645d30b2666449ac2eff1408b4fda3d",
+        "W_mu": "7c6ff91832a76e20b3159e8e5cd55fcde769ad891162f8d42004efa0a71aa81d",
+        "b_mu": "0a7f1c6cf572c55f7ade03f46ffc220ae32aa6fecb3a095611e7d6b941d7e364",
+        "W_sigma": "d595aa9549da7741bb8e71276fc49700a42147de3e6bfb057fa03bfb65aea6fd",
+        "b_sigma": "0a7f1c6cf572c55f7ade03f46ffc220ae32aa6fecb3a095611e7d6b941d7e364"
+      },
+      "recorded_observations_after": 2112,
+      "retained_replay_rows_after": 2048
+    }
+  ]
+}

@@ -71,6 +71,18 @@ than the fixed channel, and no extra F1 benefit from retaining hypothesis
 memory. This remains an opt-in research mechanism; the report preserves those
 negative results and the corrected first-run receipt-format failure.
 
+The [exact inference efficiency follow-up](docs/ait-efficiency-2026-10-29.md)
+removes repeated phase and planning work, skips unused backward allocations,
+reuses the private attention workspace, and stages observation transactions.
+It preserves the existing precision, trained weights, decoding and acquisition
+rules. The controlled comparison checks exact outputs, decision traces and final
+states while measuring timing and memory in separate runs.
+Across 4,464 matched English/Japanese/Chinese episodes, outputs, decisions and
+final states match exactly. The measured inference intervals improve 1.39–1.54×;
+median traced peak allocation drops 3.45–23.11%. Whole-worker RSS does not
+consistently decrease. See the report for both controllers, all repetitions and
+the distinction between transient allocations and process memory.
+
 Generic AIF execution now requires an explicit `ExecutionObservation` or
 execution callback. `predict_next()` is a pure forecast; `observe_transition()`
 admits delivered transitions once. Model checkpoints retain real replay and
