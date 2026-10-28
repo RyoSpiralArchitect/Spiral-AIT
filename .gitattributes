@@ -10,3 +10,5 @@ reports/observation-world-2026-10-29/*.json linguist-generated=true
 reports/observation-world-2026-10-29/*.jsonl linguist-generated=true
 reports/ait-efficiency-2026-10-29/*.json linguist-generated=true
 reports/ait-efficiency-2026-10-29/*.jsonl linguist-generated=true
+reports/slavic-ukrainian-2026-10-29/*.json linguist-generated=true
+reports/slavic-ukrainian-2026-10-29/*.jsonl linguist-generated=true

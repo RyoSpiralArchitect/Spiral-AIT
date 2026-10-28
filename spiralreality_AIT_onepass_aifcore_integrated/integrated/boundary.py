@@ -105,6 +105,7 @@ class StudentTrainingConfig:
     lexical_buckets: int = 0
     lexical_lr: float = 0.05
     train_context_encoder: bool = False
+    warm_start: bool = False
 
 
 class BoundaryStudent:
@@ -187,7 +188,7 @@ class BoundaryStudent:
         self._select_backend_device(cfg.device_preference)
         if self.julia_backend is not None:
             try:
-                self.julia_backend.configure(cfg.__dict__)
+                self.julia_backend.configure(self._native_config(cfg))
             except Exception as exc:
                 logger.warning(
                     "Julia boundary backend configure failed; falling back",
@@ -196,13 +197,58 @@ class BoundaryStudent:
                 self.julia_backend = None
         if self.compiled_backend is not None:
             try:
-                self.compiled_backend.configure(cfg.__dict__)
+                self.compiled_backend.configure(self._native_config(cfg))
             except Exception as exc:
                 logger.warning(
                     "Compiled boundary backend configure failed; falling back",
                     exc_info=True,
                 )
                 self.compiled_backend = None
+
+    @staticmethod
+    def _native_config(cfg: StudentTrainingConfig) -> Dict[str, object]:
+        # Continuation is implemented by the Python head only. Keep the
+        # historical native configuration schema for normal cold training.
+        result = dict(cfg.__dict__)
+        result.pop("warm_start", None)
+        return result
+
+    def _validate_warm_start(self, cfg: StudentTrainingConfig, lexical_buckets: int) -> None:
+        """Reject incompatible continuation before changing any live state."""
+        if self._fitted_backend != "python":
+            raise ValueError("warm_start requires an initialized Python boundary head")
+        for name in ("hidden_dim", "emb_dim", "window", "context_hidden_dim"):
+            try:
+                requested = operator.index(getattr(cfg, name))
+            except TypeError as exc:
+                raise ValueError(f"warm_start requires matching {name}") from exc
+            if isinstance(getattr(cfg, name), bool) or requested != getattr(self, name):
+                raise ValueError(f"warm_start requires matching {name}")
+        if cfg.dtype not in ("float32", "float64") or np.dtype(cfg.dtype) != np.dtype(self.dtype):
+            raise ValueError("warm_start requires matching dtype")
+        if not isinstance(cfg.use_encoder_context, bool) or cfg.use_encoder_context != self.use_encoder_context:
+            raise ValueError("warm_start requires matching use_encoder_context")
+        if lexical_buckets != self.lexical_buckets:
+            raise ValueError("warm_start requires matching lexical_buckets")
+        expected = {
+            "embeddings": (len(_CHAR_CLASSES), self.emb_dim),
+            "W_window": (self.hidden_dim, self.emb_dim * self.window * 2),
+            "b_window": (self.hidden_dim,), "W_out": (self.hidden_dim,),
+            "gate_w": (3,), "transitions": (2, 2), "lexical_weights": (lexical_buckets,),
+        }
+        if self.use_encoder_context:
+            dimension = self._encoder_model_dim()
+            if not self._context_ready() or dimension is None:
+                raise ValueError("warm_start requires the existing context encoder and head")
+            expected.update(ctx_W1=(self.context_hidden_dim, int(dimension)),
+                            ctx_b1=(self.context_hidden_dim,), ctx_w=(self.context_hidden_dim,))
+        for name, shape in expected.items():
+            value = getattr(self, name)
+            if (not isinstance(value, np.ndarray) or value.shape != shape
+                    or value.dtype != np.dtype(self.dtype) or not np.all(np.isfinite(value))):
+                raise ValueError(f"warm_start requires valid existing {name} parameters")
+        if any(not math.isfinite(value) for value in (self.b_out, self.gate_b, self.ctx_b)):
+            raise ValueError("warm_start requires finite scalar parameters")
 
     @staticmethod
     def _validate_lexical_config(cfg: StudentTrainingConfig) -> int:
@@ -744,7 +790,15 @@ class BoundaryStudent:
         segments: Sequence[Sequence[str]],
         cfg: Optional[StudentTrainingConfig] = None,
     ) -> Dict[str, object]:
+        """Train a new head, or continue a compatible Python head explicitly.
+
+        ``warm_start=True`` preserves all existing parameters before the first
+        gradient. Training controls such as learning rates and clipping may
+        change; architecture, precision, context and lexical layouts may not.
+        """
         cfg = cfg or StudentTrainingConfig()
+        if not isinstance(cfg.warm_start, bool):
+            raise ValueError("warm_start must be a boolean")
         self._validate_gradient_config(cfg)
         self._validate_encoder_training(cfg)
         lexical_buckets = self._validate_lexical_config(cfg)
@@ -757,10 +811,12 @@ class BoundaryStudent:
             raise ValueError("hidden_dim, emb_dim and window must be positive")
         if not 0.0 <= cfg.validation_split < 1.0:
             raise ValueError("validation_split must be in [0, 1)")
+        if cfg.warm_start:
+            self._validate_warm_start(cfg, lexical_buckets)
         # Validate before configuring either the Python or a native backend.
         texts, segments = texts_list, segments_list
         self.train_context_encoder = cfg.train_context_encoder
-        if not lexical_buckets:
+        if not cfg.warm_start and not lexical_buckets:
             # A successful native retrain must not retain an earlier residual.
             self.lexical_buckets = 0
             self.lexical_weights = np.zeros(0, dtype=self.dtype)
@@ -768,8 +824,8 @@ class BoundaryStudent:
         self.history = []
         fallbacks: List[str] = []
         use_context = bool(getattr(cfg, "use_encoder_context", False)) and self.encoder_adapter is not None
-        if not use_context and not lexical_buckets and self.julia_backend is not None:
-            cfg_dict = dict(cfg.__dict__)
+        if not cfg.warm_start and not use_context and not lexical_buckets and self.julia_backend is not None:
+            cfg_dict = self._native_config(cfg)
             try:
                 self._select_backend_device(cfg.device_preference)
                 summary = self.julia_backend.train(texts, segments, cfg_dict)
@@ -790,8 +846,8 @@ class BoundaryStudent:
                 fallbacks.append(backend_id)
                 logger.warning("Julia backend training failed, falling back to alternative implementation.", exc_info=True)
                 self.julia_backend = None
-        if not use_context and not lexical_buckets and self.compiled_backend is not None:
-            cfg_dict = dict(cfg.__dict__)
+        if not cfg.warm_start and not use_context and not lexical_buckets and self.compiled_backend is not None:
+            cfg_dict = self._native_config(cfg)
             try:
                 self._select_backend_device(cfg.device_preference)
                 summary = self.compiled_backend.train(texts, segments, cfg_dict)
@@ -813,7 +869,10 @@ class BoundaryStudent:
                 # Fallback to pure NumPy implementation if compiled backend fails.
                 logger.warning("Compiled backend training failed, reverting to pure Python implementation.", exc_info=True)
                 self.compiled_backend = None
-        self.configure(cfg)
+        if cfg.warm_start:
+            self.max_grad_norm = cfg.max_grad_norm
+        else:
+            self.configure(cfg)
         dataset_size = len(texts_list)
         if dataset_size == 0:
             self.history = []
@@ -839,6 +898,8 @@ class BoundaryStudent:
             }
             if meta["backend_fallbacks"]:
                 summary["backend_fallbacks"] = meta["backend_fallbacks"]
+            if cfg.warm_start:
+                summary["warm_start"] = True
             return summary
 
         train_idx, val_idx = self._split_indices(dataset_size, cfg.validation_split)
@@ -950,6 +1011,8 @@ class BoundaryStudent:
         if isinstance(backend_used, str):
             self._last_backend_used = backend_used
         summary.setdefault("backend_used", self._last_backend_used)
+        if cfg.warm_start:
+            summary["warm_start"] = True
         return summary
 
     def _zero_grad(self) -> Dict[str, object]:

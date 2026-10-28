@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "dataset": "UD Ukrainian ParlaMint with Polish/Czech PUD auxiliary",
+  "release": "r2.18",
+  "max_source_bytes": 33554432,
+  "sources": [
+    {
+      "language": "uk",
+      "source_id": "UD_Ukrainian-ParlaMint",
+      "repository": "https://github.com/UniversalDependencies/UD_Ukrainian-ParlaMint",
+      "revision": "dfa85dba5c2254f5e1a71b2fa8a7316b76bf18b9",
+      "release": "r2.18",
+      "license": "CC-BY-SA-4.0",
+      "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+      "readme_url": "https://github.com/UniversalDependencies/UD_Ukrainian-ParlaMint/blob/dfa85dba5c2254f5e1a71b2fa8a7316b76bf18b9/README.md",
+      "upstream_license_url": "https://github.com/UniversalDependencies/UD_Ukrainian-ParlaMint/blob/dfa85dba5c2254f5e1a71b2fa8a7316b76bf18b9/LICENSE.txt",
+      "text_origin": "native_Ukrainian_Rada_and_NSDC_transcripts",
+      "parallel_document_provenance": null,
+      "files": {
+        "uk_parlamint-ud-train.conllu": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Ukrainian-ParlaMint/dfa85dba5c2254f5e1a71b2fa8a7316b76bf18b9/uk_parlamint-ud-train.conllu",
+          "sha256": "f470a0d5dfa842bce5b00e5fa0b1136e6243d404bb1968f133c7a3005d0105e9",
+          "bytes": 8321578,
+          "upstream_split": "train"
+        },
+        "uk_parlamint-ud-dev.conllu": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Ukrainian-ParlaMint/dfa85dba5c2254f5e1a71b2fa8a7316b76bf18b9/uk_parlamint-ud-dev.conllu",
+          "sha256": "ad62eac62bf08e977d82f9607a513d57c74e1e4216cd7bb2c6a4926bcbbe583d",
+          "bytes": 1044428,
+          "upstream_split": "dev"
+        },
+        "uk_parlamint-ud-test.conllu": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Ukrainian-ParlaMint/dfa85dba5c2254f5e1a71b2fa8a7316b76bf18b9/uk_parlamint-ud-test.conllu",
+          "sha256": "92e8aeeeec90d45b45f83d6c975f0ad6da0941cc9a73b17dd3588dd9e02e75ad",
+          "bytes": 1063764,
+          "upstream_split": "test"
+        },
+        "README.md": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Ukrainian-ParlaMint/dfa85dba5c2254f5e1a71b2fa8a7316b76bf18b9/README.md",
+          "sha256": "1af5fd1308f38bbd0854eb060fd88861e7231aff54e802312dccfb4a7d3a6757",
+          "bytes": 3633
+        },
+        "LICENSE.txt": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Ukrainian-ParlaMint/dfa85dba5c2254f5e1a71b2fa8a7316b76bf18b9/LICENSE.txt",
+          "sha256": "899b1804a12ebc090b96339614eede1b64b686721b650a71430b55b5235f7f79",
+          "bytes": 202
+        }
+      },
+      "native_document_provenance": "ParlaMint-UA sentence IDs identify plenary dates; group all -m sessions from one date together. The README also documents one NSDC meeting, explicitly identified as NSDC_UA_28_Feb2014; keep it as one separate source document."
+    },
+    {
+      "language": "pl",
+      "source_id": "UD_Polish-PUD",
+      "repository": "https://github.com/UniversalDependencies/UD_Polish-PUD",
+      "revision": "888f7ff15422a70be1adbf5ea7c0c66f5d8b444d",
+      "release": "r2.18",
+      "license": "CC-BY-SA-4.0",
+      "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+      "readme_url": "https://github.com/UniversalDependencies/UD_Polish-PUD/blob/888f7ff15422a70be1adbf5ea7c0c66f5d8b444d/README.md",
+      "upstream_license_url": "https://github.com/UniversalDependencies/UD_Polish-PUD/blob/888f7ff15422a70be1adbf5ea7c0c66f5d8b444d/LICENSE.txt",
+      "text_origin": "translated_PUD_auxiliary",
+      "parallel_document_provenance": "Resolve parallel_id using the pinned English/Japanese/Chinese PUD source document metadata; inherit their document/normalized-duplicate groups and roles.",
+      "files": {
+        "pl_pud-ud-test.conllu": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Polish-PUD/888f7ff15422a70be1adbf5ea7c0c66f5d8b444d/pl_pud-ud-test.conllu",
+          "sha256": "1af733133fa641380144c65a0292f5e8b46a077e90085f21cedbf416f2907287",
+          "bytes": 2033435,
+          "upstream_split": "test"
+        },
+        "README.md": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Polish-PUD/888f7ff15422a70be1adbf5ea7c0c66f5d8b444d/README.md",
+          "sha256": "7030f6edf41ef4b93eca582cebc8899d2846873beea673ad3791bb9b47122f0f",
+          "bytes": 3779
+        },
+        "LICENSE.txt": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Polish-PUD/888f7ff15422a70be1adbf5ea7c0c66f5d8b444d/LICENSE.txt",
+          "sha256": "e646e31fa73706dfecad49ae5c4f1948682cd6d49d43c6a2bade98b2b3250aa3",
+          "bytes": 217
+        }
+      }
+    },
+    {
+      "language": "cs",
+      "source_id": "UD_Czech-PUD",
+      "repository": "https://github.com/UniversalDependencies/UD_Czech-PUD",
+      "revision": "dfab1926110b82c2e01278c292d9c01b0abbc0ff",
+      "release": "r2.18",
+      "license": "CC-BY-SA-4.0",
+      "license_url": "https://creativecommons.org/licenses/by-sa/4.0/",
+      "readme_url": "https://github.com/UniversalDependencies/UD_Czech-PUD/blob/dfab1926110b82c2e01278c292d9c01b0abbc0ff/README.md",
+      "upstream_license_url": "https://github.com/UniversalDependencies/UD_Czech-PUD/blob/dfab1926110b82c2e01278c292d9c01b0abbc0ff/LICENSE.txt",
+      "text_origin": "translated_PUD_auxiliary",
+      "parallel_document_provenance": "Resolve parallel_id using the pinned English/Japanese/Chinese PUD source document metadata; inherit their document/normalized-duplicate groups and roles.",
+      "files": {
+        "cs_pud-ud-test.conllu": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Czech-PUD/dfab1926110b82c2e01278c292d9c01b0abbc0ff/cs_pud-ud-test.conllu",
+          "sha256": "af365749e569cc9daeeebee916dd33161e5c23b278077553f6ffbf4f82c5b652",
+          "bytes": 2205721,
+          "upstream_split": "test"
+        },
+        "README.md": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Czech-PUD/dfab1926110b82c2e01278c292d9c01b0abbc0ff/README.md",
+          "sha256": "d46f08ade45217e70c7250f1c7553f26222bba356949a9da53b12e2674aa71d7",
+          "bytes": 4023
+        },
+        "LICENSE.txt": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Czech-PUD/dfab1926110b82c2e01278c292d9c01b0abbc0ff/LICENSE.txt",
+          "sha256": "899b1804a12ebc090b96339614eede1b64b686721b650a71430b55b5235f7f79",
+          "bytes": 202
+        }
+      }
+    }
+  ],
+  "notice": "Raw source text and full attribution/license files remain in local cache. Ukrainian uses native Rada and NSDC transcripts. Polish/Czech PUD are translated auxiliary data, linked to the existing EN/JA/ZH document groups. All source revisions and byte hashes are frozen; custom session/document-grouped partitions are not official UD test scores. Source licenses remain CC BY-SA 4.0 and are distinct from the code license.",
+  "format_url": "https://universaldependencies.org/format.html"
+}
