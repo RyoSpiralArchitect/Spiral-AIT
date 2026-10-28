@@ -25,6 +25,16 @@ def test_segment_text_with_aif_emits_policy_metadata() -> None:
     assert "candidates" in result["aif"]
 
 
+def test_legacy_reuse_benchmark_remains_an_explicit_five_pass_comparison():
+    from scripts.benchmark_aif_reuse import run
+    report = run(repeats=1)
+    assert report["selection_mode"] == "legacy_efe"
+    assert "benchmark_aif_reuse.py" in report["source_sha256"]
+    for row in report["rows"]:
+        assert row["encoder_passes"] == {"recomputed": 5, "shared": 1}
+        assert row["identical_tokens_policy_and_scores"]
+
+
 def test_aif_reuses_one_encoder_pass_without_changing_policy_scores():
     ait = OnePassAIT(latent_dim=16, seed=11, encoder_layers=1)
     text = "One pass, several policies."

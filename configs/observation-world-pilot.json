@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "study": "pud-bayesian-observation-world-pilot-v2",
+  "failure_disclosure": "The first completed exploratory run, contract f994da898250bbc4c01266ba7f961d8441788a1f6d1b42d3370d8f7232684767, exposed a receipt-format defect: integer waiting-histogram keys changed canonical sort order after JSON converted them to strings, invalidating six per-condition result hashes on resume. Its raw episode files and results are retained locally. This corrected contract normalizes JSON trees before hashing and repeats every unchanged hypothesis, mode, cost, probe and test sentence; no condition or parameter is selected using the first outcomes.",
+  "source_study": ".cache/active-context-pilot-v1",
+  "source_contract_sha256": "ff8bd11f9d24ded054d67852ab31ed2bd025eafe489ff286015d65b6fcc556ab",
+  "source_artifact_sha256": {
+    "plan.json": "194e712d6a9a021352c966c7b1bc6963c1a7e72778a9e37c085b16bd0ab950b5",
+    "channel.json": "ef8effece6eefcd64bc9933d02e1a3557b3399a7cb059930239d373deabafd96",
+    "channel_fit.json": "9920db6e6425f5ca6f320472e38151edd431ac6d638153dc339ebde873428e61",
+    "warm_started_model.json": "ef58dad56beeb497a5f3879b23470804f29b521b47c2e57cbe37dedf66924eb4",
+    "warm_start.json": "395e3252a8f5776e645f8cd55b00802611a585f1630dd3b5308c8acb214c4f7c"
+  },
+  "modes": ["fixed_channel", "fixed_mixture", "adaptive", "null_channel"],
+  "char_costs": [0.0005, 0.002],
+  "informative_prior": 0.5,
+  "model_epistemic_weight": 0.0,
+  "bootstrap": {"seed": 20261029, "replicates": 2000, "confidence": 0.95},
+  "probe": {"initial_chars": 8, "max_window_chars": 96, "action_cycle": [4, 16], "focus": "maximum_initial_boundary_entropy"},
+  "timing_protocol": "One episode measurement after restoring the same warmed checkpoint and before scoring or serialization. Includes session planning, inference and observation processing; old latent-feature weight fitting is disabled in every mode. Conditions execute in a frozen hash order. These local sequential timings are descriptive. The common-observation probe is outside episode timing.",
+  "protocol": "Frozen exploratory comparison on the already inspected PUD test partition and original supervised channel/checkpoint from the prior study. Evaluate all 279 sentences at both prespecified character costs, with no selection from these test outcomes. Fixed channel uses its label-conditional observation likelihood; fixed mixture starts each continuation with the declared independent regime prior after preserving its label posterior; adaptive retains each boundary's complete correlated regime/label posterior; null channel fixes the informative-regime prior to zero. All modes freeze segmenter, encoder, fitted channel and old latent-feature weights; phase and scalar surprise drives are zero. The new online state is Bayesian inference over fixed observation hypotheses for the same boundary, not online fitting of the older latent-feature dynamics. State resets per sentence. A separate fixed 4/16-character prefix probe supplies identical outcomes to all modes, isolating prequential outcome forecasting from differing acquired trajectories. Runtime never receives labels; probe labels are used only for final scoring. Document-group bootstrap shares resampled groups across the parallel languages. This is previously exposed translated text with earlier full-development checkpoint selection; no independent-corpus, semantic-information or production-readiness claim follows."
+}

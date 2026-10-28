@@ -104,6 +104,7 @@ class StudentTrainingConfig:
     context_hidden_dim: int = 32
     lexical_buckets: int = 0
     lexical_lr: float = 0.05
+    train_context_encoder: bool = False
 
 
 class BoundaryStudent:
@@ -120,6 +121,7 @@ class BoundaryStudent:
         self.max_grad_norm: Optional[float] = 10.0
         self.lexical_buckets = 0
         self._fitted_backend: Optional[str] = None
+        self.train_context_encoder = False
         self._init_parameters()
         self.encoder_adapter: Optional["SpectralTransformerAdapter"] = None
         self.use_encoder_context: bool = True
@@ -154,7 +156,10 @@ class BoundaryStudent:
                 self.compiled_backend = None
 
     def configure(self, cfg: StudentTrainingConfig) -> None:
+        self._validate_gradient_config(cfg)
+        self._validate_encoder_training(cfg)
         lexical_buckets = self._validate_lexical_config(cfg)
+        self.train_context_encoder = cfg.train_context_encoder
         self.history = []
         self.best_state = None
         self.hidden_dim = cfg.hidden_dim
@@ -364,7 +369,27 @@ class BoundaryStudent:
         if self.ctx_w is not None and hasattr(self.ctx_w, "dtype") and self.ctx_w.dtype != self.dtype:
             self.ctx_w = np.array(self.ctx_w, dtype=self.dtype, copy=True)
 
-    def _encode_context(self, seq: BoundarySequence) -> Optional[np.ndarray]:
+    def _validate_encoder_training(self, cfg: StudentTrainingConfig) -> None:
+        if not isinstance(cfg.train_context_encoder, bool):
+            raise ValueError("train_context_encoder must be a boolean")
+        if not cfg.train_context_encoder:
+            return
+        if not cfg.use_encoder_context or self.encoder_adapter is None:
+            raise ValueError("train_context_encoder requires an attached context encoder")
+        methods = ("forward_with_cache", "backward", "trainable_parameters")
+        if any(not callable(getattr(self.encoder_adapter, name, None)) for name in methods):
+            raise ValueError("train_context_encoder requires a differentiable encoder; select encoder_backend='numpy'")
+        if not math.isfinite(cfg.encoder_lr) or cfg.encoder_lr < 0:
+            raise ValueError("encoder_lr must be finite and nonnegative")
+
+    @staticmethod
+    def _validate_gradient_config(cfg: StudentTrainingConfig) -> None:
+        if not math.isfinite(cfg.reg) or cfg.reg < 0:
+            raise ValueError("reg must be finite and nonnegative")
+        if cfg.max_grad_norm is not None and (not math.isfinite(cfg.max_grad_norm) or cfg.max_grad_norm < 0):
+            raise ValueError("max_grad_norm must be finite and nonnegative, or None")
+
+    def _encode_context(self, seq: BoundarySequence, *, retain_cache: bool = False):
         if not self._context_ready():
             return None
         assert self.encoder_adapter is not None
@@ -385,6 +410,8 @@ class BoundaryStudent:
         if gate_pos.shape[0] != X.shape[0]:
             gate_pos = np.resize(gate_pos, (X.shape[0],))
         gate_mask = np.minimum.outer(gate_pos, gate_pos).astype(float, copy=False)
+        if retain_cache:
+            return self.encoder_adapter.forward_with_cache(X, gate_pos, gate_mask=gate_mask)
         H = self.encoder_adapter.forward(X, gate_pos, gate_mask=gate_mask)
         return np.asarray(H, dtype=float)
 
@@ -407,7 +434,7 @@ class BoundaryStudent:
             if "".join(parts) != text or (text and any(not part for part in parts)):
                 raise ValueError(f"segments {index} must partition the original text exactly")
 
-    def _build_sequence(self, text: str, seg: Sequence[str]) -> BoundarySequence:
+    def _build_sequence(self, text: str, seg: Sequence[str], *, refresh_phase: bool = True) -> BoundarySequence:
         categories = np.array([_char_category(ch) for ch in text], dtype=int)
         labels = np.array(self._segments_to_boundaries(text, seg), dtype=int)
         seq = BoundarySequence(
@@ -419,8 +446,16 @@ class BoundaryStudent:
             lexical_features=self._lexical_features(text) if self.lexical_buckets else None,
             lexical_buckets=self.lexical_buckets,
         )
-        self._refresh_phase_features(seq)
+        if refresh_phase:
+            self._refresh_phase_features(seq)
         return seq
+
+    def _inference_sequence(self, text: str) -> BoundarySequence:
+        # A fresh sequence enters _forward_sequence immediately, where the
+        # current phase basis is read. Cached training sequences still refresh
+        # on every forward, including after a basis update or restore.
+        self._validate_training_data([text], [[text]])
+        return self._build_sequence(text, [text], refresh_phase=False)
 
     def _lexical_features(self, text: str) -> Tuple[Tuple[Tuple[int, int], ...], ...]:
         """Seven fixed positional templates with deterministic signed hashing.
@@ -526,7 +561,11 @@ class BoundaryStudent:
         vec = window_vec if hasattr(window_vec, "shape") else np.array(window_vec, dtype=self.dtype)
         return self.W_window @ vec + self.b_window
 
-    def _forward_sequence(self, seq: BoundarySequence) -> Tuple[List[float], List[Dict[str, object]]]:
+    def _forward_sequence(self, seq: BoundarySequence, *, retain_encoder_cache: bool = False,
+                          include_context_summary: bool = False,
+                          retain_boundary_cache: bool = True) -> Tuple[List[float], List[Dict[str, object]]]:
+        if retain_encoder_cache and not retain_boundary_cache:
+            raise ValueError("Encoder backward tapes require boundary backward caches")
         # The basis changes during training and can be restored by early stopping.
         # Refresh cached train and validation features using the same basis as inference.
         self._refresh_phase_features(seq)
@@ -539,7 +578,11 @@ class BoundaryStudent:
         embeddings = np.zeros((length, self.emb_dim), dtype=self.dtype)
         for i, cat in enumerate(seq.categories):
             embeddings[i] = self.embeddings[int(cat)]
-        ctx_H = self._encode_context(seq)
+        encoder_tape = None
+        if retain_encoder_cache and seq.text and self._context_ready():
+            ctx_H, encoder_tape = self._encode_context(seq, retain_cache=True)
+        else:
+            ctx_H = self._encode_context(seq)
         caches: List[Dict[str, object]] = []
         logits: List[float] = []
         for idx in range(len(seq.labels)):
@@ -568,18 +611,25 @@ class BoundaryStudent:
             lexical_features = seq.lexical_features[idx] if self.lexical_buckets else ()
             lexical_score = sum(float(self.lexical_weights[bucket]) * count for bucket, count in lexical_features)
             logits.append(core + gate_score + ctx_score + lexical_score)
-            caches.append(
-                {
-                    "indices": indices,
-                    "window": window_vec,
-                    "pre": pre,
-                    "hidden": hidden,
-                    "gate_feats": gate_feats,
-                    "ctx_delta": ctx_delta,
-                    "ctx_hidden": ctx_hidden,
-                    "lexical_features": lexical_features,
-                }
-            )
+            if retain_boundary_cache:
+                caches.append(
+                    {
+                        "indices": indices,
+                        "window": window_vec,
+                        "pre": pre,
+                        "hidden": hidden,
+                        "gate_feats": gate_feats,
+                        "ctx_delta": ctx_delta,
+                        "ctx_hidden": ctx_hidden,
+                        "lexical_features": lexical_features,
+                    }
+                )
+        if caches and encoder_tape is not None:
+            caches[0]["encoder_tape"] = encoder_tape
+        if len(seq.labels) and include_context_summary and ctx_H is not None:
+            if not caches:
+                caches.append({})
+            caches[0]["context_summary"] = np.mean(np.tanh(ctx_H), axis=0)
         return logits, caches
 
     # ------------------------------------------------------------------
@@ -592,9 +642,12 @@ class BoundaryStudent:
             return m
         return m + math.log(sum(math.exp(v - m) for v in vals))
 
-    def _crf_loss(self, logits: List[float], labels: List[int]) -> Tuple[float, List[float], List[List[float]], List[List[float]]]:
+    def _crf_loss(self, logits: List[float], labels: List[int], *, compute_gradients: bool = True
+                  ) -> Tuple[float, Optional[np.ndarray], Optional[np.ndarray], List[np.ndarray]]:
         length = len(logits)
         if length == 0:
+            if not compute_gradients:
+                return 0.0, None, None, []
             return 0.0, [], [[0.0, 0.0], [0.0, 0.0]], []
         # Avoid float32 accumulation across long sequences, even when model
         # parameters are float32. Dynamic-programming scores use Python floats.
@@ -628,7 +681,7 @@ class BoundaryStudent:
                 ]
                 beta[i][state] = self._logsumexp(scores)
 
-        grad_logits = [0.0 for _ in range(length)]
+        grad_logits = [0.0 for _ in range(length)] if compute_gradients else None
         marginals: List[List[float]] = []
         for i in range(length):
             gamma0 = alpha[i][0] + beta[i][0]
@@ -642,8 +695,12 @@ class BoundaryStudent:
                 exponent = math.exp(difference)
                 p1 = exponent / (1.0 + exponent)
             p0 = 1.0 - p1
-            grad_logits[i] = p1 - labels[i]
+            if compute_gradients:
+                grad_logits[i] = p1 - labels[i]
             marginals.append([p0, p1])
+
+        if not compute_gradients:
+            return nll, None, None, [np.array(m, dtype=self.dtype) for m in marginals]
 
         grad_trans = [[0.0, 0.0], [0.0, 0.0]]
         for i in range(1, length):
@@ -688,6 +745,8 @@ class BoundaryStudent:
         cfg: Optional[StudentTrainingConfig] = None,
     ) -> Dict[str, object]:
         cfg = cfg or StudentTrainingConfig()
+        self._validate_gradient_config(cfg)
+        self._validate_encoder_training(cfg)
         lexical_buckets = self._validate_lexical_config(cfg)
         texts_list = list(texts)
         segments_list = [list(seg) if not isinstance(seg, str) else seg for seg in segments]
@@ -700,6 +759,7 @@ class BoundaryStudent:
             raise ValueError("validation_split must be in [0, 1)")
         # Validate before configuring either the Python or a native backend.
         texts, segments = texts_list, segments_list
+        self.train_context_encoder = cfg.train_context_encoder
         if not lexical_buckets:
             # A successful native retrain must not retain an earlier residual.
             self.lexical_buckets = 0
@@ -815,6 +875,7 @@ class BoundaryStudent:
             accum = self._zero_grad()
             batch_count = 0
             total_loss = 0.0
+            update_diagnostics = []
             for idx in train_idx:
                 seq = get_sequence(idx)
                 loss, grads, marginals = self._sequence_gradients(seq, cfg)
@@ -822,12 +883,17 @@ class BoundaryStudent:
                 self._accumulate(accum, grads)
                 batch_count += 1
                 if batch_count % cfg.batch_size == 0:
-                    self._apply_gradients(accum, cfg, cfg.batch_size)
+                    update_diagnostics.append(self._apply_gradients(accum, cfg, cfg.batch_size))
                     accum = self._zero_grad()
             if batch_count % cfg.batch_size != 0:
-                self._apply_gradients(accum, cfg, batch_count % cfg.batch_size)
+                update_diagnostics.append(self._apply_gradients(accum, cfg, batch_count % cfg.batch_size))
             train_count = max(1, len(train_idx))
             metrics = {"epoch": float(epoch + 1), "train_loss": float(total_loss / train_count)}
+            if update_diagnostics:
+                for name in update_diagnostics[0]:
+                    metrics["mean_" + name] = sum(row[name] for row in update_diagnostics) / len(update_diagnostics)
+                metrics["clipped_updates"] = sum(row["gradient_clip_scale"] < 1.0 for row in update_diagnostics)
+                metrics["optimizer_updates"] = len(update_diagnostics)
             if val_seqs:
                 val_loss, val_f1 = self.evaluate(val_seqs)
                 metrics.update({"val_loss": val_loss, "val_f1": val_f1})
@@ -866,6 +932,8 @@ class BoundaryStudent:
             "device_preference": cfg.device_preference,
             "lexical_buckets": self.lexical_buckets,
             "lexical_lr": cfg.lexical_lr,
+            "train_context_encoder": self.train_context_encoder,
+            "optimizer_contract": "mean_nll_l2_then_global_clip_v2",
         }
         meta = self._backend_metadata(str(summary["backend"]), fallbacks)
         summary.setdefault("backend_used", meta["backend_used"])
@@ -905,16 +973,20 @@ class BoundaryStudent:
         if self.ctx_w is not None:
             grads["ctx_w"] = np.zeros_like(self.ctx_w)
             grads["ctx_b"] = 0.0
+        if self.train_context_encoder:
+            grads["encoder"] = {name: np.zeros_like(value)
+                                for name, value in self.encoder_adapter.trainable_parameters().items()}
         return grads
 
     def _sequence_gradients(
         self, seq: BoundarySequence, cfg: StudentTrainingConfig
     ) -> Tuple[float, Dict[str, object], List[np.ndarray]]:
-        logits, caches = self._forward_sequence(seq)
+        logits, caches = self._forward_sequence(seq, retain_encoder_cache=self.train_context_encoder)
         label_list = self._labels_to_int(seq.labels)
         loss, grad_logits, grad_trans, marginals = self._crf_loss(logits, label_list)
         grads = self._zero_grad()
         embed_grads = np.zeros((len(seq.categories), self.emb_dim), dtype=self.dtype)
+        encoder_gradient = np.zeros((len(seq.text), self._encoder_model_dim()), dtype=float) if self.train_context_encoder else None
         for i, cache in enumerate(caches):
             grad_logit = float(grad_logits[i])
             hidden = cache["hidden"]
@@ -931,7 +1003,8 @@ class BoundaryStudent:
 
             grads["gate_w"] += grad_logit * gate_feats
             grads["gate_b"] += grad_logit
-            self.phase.apply_error(seq.text, i, grad_logit, scale=cfg.phase_lr)
+            if cfg.phase_lr != 0:
+                self.phase.apply_error(seq.text, i, grad_logit, scale=cfg.phase_lr)
 
             grads["W_out"] += grad_logit * hidden
             grads["b_out"] += grad_logit
@@ -946,6 +1019,10 @@ class BoundaryStudent:
                     grad_ctx_pre = (grad_logit * self.ctx_w) * (np.ones_like(ctx_hidden_sq) - ctx_hidden_sq)
                     grads["ctx_b1"] += grad_ctx_pre
                     grads["ctx_W1"] += np.outer(grad_ctx_pre, ctx_delta_arr)
+                    if encoder_gradient is not None:
+                        grad_delta = self.ctx_W1.T @ grad_ctx_pre
+                        encoder_gradient[i + 1] += grad_delta
+                        encoder_gradient[i] -= grad_delta
 
             grad_hidden = grad_logit * self.W_out
             hidden_sq = hidden * hidden if hasattr(hidden, "__mul__") else np.array([float(h) ** 2 for h in hidden])
@@ -963,7 +1040,10 @@ class BoundaryStudent:
 
         grads["transitions"] += grad_trans
 
-        if self.encoder_adapter is not None:
+        if self.train_context_encoder:
+            if caches and "encoder_tape" in caches[0]:
+                _, grads["encoder"] = self.encoder_adapter.backward(encoder_gradient, caches[0]["encoder_tape"])
+        elif self.encoder_adapter is not None:
             gate_targets = self._char_gate_targets(label_list, marginals)
             base_gate = [sigmoid(float(c)) for c in (seq.curvature.tolist() if hasattr(seq.curvature, "tolist") else seq.curvature)]
             self.encoder_adapter.tune_from_boundary(base_gate, gate_targets, lr=cfg.encoder_lr)
@@ -985,18 +1065,20 @@ class BoundaryStudent:
                 targets[i + 1] = max(targets[i + 1], val)
         return targets
 
-    def _l2_norm(self) -> float:
-        total = 0.0
-        total += float(np.sum(self.W_window * self.W_window))
-        total += float(np.sum(self.W_out * self.W_out))
-        total += float(np.sum(self.gate_w * self.gate_w))
-        total += float(np.sum(self.embeddings * self.embeddings))
+    def _regularized_parameters(self) -> Dict[str, object]:
+        parameters = {name: getattr(self, name) for name in
+                      ("embeddings", "W_window", "W_out", "gate_w", "transitions")}
+        for name in ("ctx_W1", "ctx_w"):
+            if getattr(self, name) is not None:
+                parameters[name] = getattr(self, name)
         if self.lexical_buckets:
-            total += float(np.sum(self.lexical_weights * self.lexical_weights))
-        if self.ctx_W1 is not None:
-            total += float(np.sum(self.ctx_W1 * self.ctx_W1))
-        if self.ctx_w is not None:
-            total += float(np.sum(self.ctx_w * self.ctx_w))
+            parameters["lexical_weights"] = self.lexical_weights
+        return parameters
+
+    def _l2_norm(self) -> float:
+        total = sum(float(np.sum(value * value)) for value in self._regularized_parameters().values())
+        if self.train_context_encoder:
+            total += sum(float(np.sum(value * value)) for value in self.encoder_adapter.trainable_parameters().values())
         return total
 
     def _accumulate(self, accum: Dict[str, object], grads: Dict[str, object]) -> None:
@@ -1018,39 +1100,49 @@ class BoundaryStudent:
         if "ctx_w" in accum and "ctx_w" in grads:
             accum["ctx_w"] += grads["ctx_w"]
             accum["ctx_b"] += grads["ctx_b"]
+        if "encoder" in accum:
+            for name, gradient in grads["encoder"].items():
+                accum["encoder"][name] += gradient
 
-    def _apply_gradients(self, grads: Dict[str, object], cfg: StudentTrainingConfig, batch_size: int) -> None:
-        base_scale = cfg.lr / max(1, batch_size)
-        grad_scale = 1.0
-        if cfg.max_grad_norm:
-            norm = self._grad_norm(grads)
-            if norm > cfg.max_grad_norm:
-                grad_scale = cfg.max_grad_norm / (norm + 1e-9)
-        scale = base_scale * grad_scale
-        crf_scale = cfg.crf_lr / max(1, batch_size) * grad_scale
-
-        self.embeddings -= scale * (grads["embeddings"] + cfg.reg * self.embeddings)
-        self.W_window -= scale * (grads["W_window"] + cfg.reg * self.W_window)
-        self.b_window -= scale * grads["b_window"]
-        self.W_out -= scale * (grads["W_out"] + cfg.reg * self.W_out)
-        self.b_out -= scale * grads["b_out"]
-        self.gate_w -= scale * (grads["gate_w"] + cfg.reg * self.gate_w)
-        self.gate_b -= scale * grads["gate_b"]
-        self.transitions -= crf_scale * (grads["transitions"] + cfg.reg * self.transitions)
+    def _mean_objective_gradient(self, grads: Dict[str, object], cfg: StudentTrainingConfig,
+                                 batch_size: int) -> Dict[str, object]:
+        """Gradient of mean CRF NLL plus the reported per-example L2 penalty."""
+        count = max(1, batch_size)
+        mean = {name: value / count for name, value in grads.items()
+                if name not in ("lexical_weights", "encoder")}
         if self.lexical_buckets:
-            lexical_scale = cfg.lexical_lr / max(1, batch_size) * grad_scale
-            self.lexical_weights *= 1.0 - lexical_scale * cfg.reg
+            mean["lexical_weights"] = np.zeros_like(self.lexical_weights)
             for bucket, value in grads["lexical_weights"].items():
-                self.lexical_weights[bucket] -= lexical_scale * value
-        if any(key in grads for key in ("ctx_W1", "ctx_b1", "ctx_w")):
-            ctx_scale = cfg.context_lr / max(1, batch_size) * grad_scale
-            if self.ctx_W1 is not None and "ctx_W1" in grads:
-                self.ctx_W1 -= ctx_scale * (grads["ctx_W1"] + cfg.reg * self.ctx_W1)
-            if self.ctx_b1 is not None and "ctx_b1" in grads:
-                self.ctx_b1 -= ctx_scale * grads["ctx_b1"]
-            if self.ctx_w is not None and "ctx_w" in grads:
-                self.ctx_w -= ctx_scale * (grads["ctx_w"] + cfg.reg * self.ctx_w)
-                self.ctx_b -= ctx_scale * grads.get("ctx_b", 0.0)
+                mean["lexical_weights"][bucket] = value / count
+        for name, parameter in self._regularized_parameters().items():
+            mean[name] += cfg.reg * parameter
+        if self.train_context_encoder:
+            mean["encoder"] = {name: grads["encoder"][name] / count + cfg.reg * parameter
+                               for name, parameter in self.encoder_adapter.trainable_parameters().items()}
+        return mean
+
+    def _apply_gradients(self, grads: Dict[str, object], cfg: StudentTrainingConfig,
+                         batch_size: int) -> Dict[str, float]:
+        # Average before clipping: duplicating a batch must not change its step.
+        # The same objective and clipping factor apply to the head and encoder.
+        mean = self._mean_objective_gradient(grads, cfg, batch_size)
+        norm = self._grad_norm(mean)
+        grad_scale = min(1.0, cfg.max_grad_norm / (norm + 1e-9)) if cfg.max_grad_norm else 1.0
+        for name in ("embeddings", "W_window", "b_window", "W_out", "b_out", "gate_w", "gate_b"):
+            setattr(self, name, getattr(self, name) - cfg.lr * grad_scale * mean[name])
+        self.transitions -= cfg.crf_lr * grad_scale * mean["transitions"]
+        if self.lexical_buckets:
+            self.lexical_weights -= cfg.lexical_lr * grad_scale * mean["lexical_weights"]
+        for name in ("ctx_W1", "ctx_b1", "ctx_w", "ctx_b"):
+            if name in mean:
+                setattr(self, name, getattr(self, name) - cfg.context_lr * grad_scale * mean[name])
+        encoder_norm = 0.0
+        if self.train_context_encoder:
+            encoder_norm = math.sqrt(sum(float(np.sum(value * value)) for value in mean["encoder"].values()))
+            for name, parameter in self.encoder_adapter.trainable_parameters().items():
+                parameter -= cfg.encoder_lr * grad_scale * mean["encoder"][name]
+        return {"objective_gradient_norm": norm, "gradient_clip_scale": grad_scale,
+                "encoder_objective_gradient_norm": encoder_norm}
 
     def _grad_norm(self, grads: Dict[str, object]) -> float:
         total = 0.0
@@ -1062,7 +1154,12 @@ class BoundaryStudent:
         total += float(np.sum(grads["transitions"] * grads["transitions"]))
         total += float(grads["b_out"] ** 2)
         total += float(grads["gate_b"] ** 2)
-        total += sum(float(value) ** 2 for value in grads.get("lexical_weights", {}).values())
+        lexical = grads.get("lexical_weights", {})
+        if isinstance(lexical, dict):
+            total += sum(float(value) ** 2 for value in lexical.values())
+        else:
+            total += float(np.sum(lexical * lexical))
+        total += sum(float(np.sum(value * value)) for value in grads.get("encoder", {}).values())
         if "ctx_W1" in grads:
             total += float(np.sum(grads["ctx_W1"] * grads["ctx_W1"]))
         if "ctx_b1" in grads:
@@ -1075,6 +1172,7 @@ class BoundaryStudent:
     def _capture_state(self) -> Dict[str, object]:
         state: Dict[str, object] = {
             "fitted_backend": self._fitted_backend or "python",
+            "train_context_encoder": self.train_context_encoder,
             "architecture": {
                 "hidden_dim": self.hidden_dim,
                 "emb_dim": self.emb_dim,
@@ -1119,6 +1217,7 @@ class BoundaryStudent:
 
     def _restore_state(self, state: Dict[str, object]) -> None:
         self._fitted_backend = state.get("fitted_backend", "python")
+        self.train_context_encoder = bool(state.get("train_context_encoder", False))
         architecture = state.get("architecture", {})
         if architecture.get("dtype") == "float64" and hasattr(np, "float64"):
             self.dtype = np.float64
@@ -1274,9 +1373,9 @@ class BoundaryStudent:
         total_loss = 0.0
         total_tp = total_fp = total_fn = 0
         for seq in sequences:
-            logits, _ = self._forward_sequence(seq)
+            logits, _ = self._forward_sequence(seq, retain_boundary_cache=False)
             labels = self._labels_to_int(seq.labels)
-            loss, _, _, marginals = self._crf_loss(logits, labels)
+            loss, _, _, marginals = self._crf_loss(logits, labels, compute_gradients=False)
             total_loss += loss
             preds = self._viterbi(logits)
             tp, fp, fn = self._boundary_confusion(preds, labels)
@@ -1337,10 +1436,10 @@ class BoundaryStudent:
             if len(text) <= 1:
                 self._backend_metadata("python", fallbacks, stage="boundary_probs")
                 return np.zeros(0, dtype=float)
-            seq = self.build_sequences([text], [[text]])[0]
-            logits, _ = self._forward_sequence(seq)
+            seq = self._inference_sequence(text)
+            logits, _ = self._forward_sequence(seq, retain_boundary_cache=False)
             labels = self._labels_to_int(seq.labels)
-            _, _, _, marginals = self._crf_loss(logits, labels)
+            _, _, _, marginals = self._crf_loss(logits, labels, compute_gradients=False)
             probs = [m[1] for m in marginals]
             self._backend_metadata("python", fallbacks, stage="boundary_probs")
             return np.array(probs, dtype=float)
@@ -1373,10 +1472,10 @@ class BoundaryStudent:
         if len(text) <= 1:
             self._backend_metadata("python", fallbacks, stage="boundary_probs")
             return np.zeros(0, dtype=float)
-        seq = self.build_sequences([text], [[text]])[0]
-        logits, _ = self._forward_sequence(seq)
+        seq = self._inference_sequence(text)
+        logits, _ = self._forward_sequence(seq, retain_boundary_cache=False)
         labels = self._labels_to_int(seq.labels)
-        _, _, _, marginals = self._crf_loss(logits, labels)
+        _, _, _, marginals = self._crf_loss(logits, labels, compute_gradients=False)
         probs = [m[1] for m in marginals]
         self._backend_metadata("python", fallbacks, stage="boundary_probs")
         return np.array(probs, dtype=float)
@@ -1385,9 +1484,36 @@ class BoundaryStudent:
         self._require_python_head()
         if len(text) <= 1:
             return []
-        seq = self.build_sequences([text], [[text]])[0]
-        logits, _ = self._forward_sequence(seq)
+        seq = self._inference_sequence(text)
+        logits, _ = self._forward_sequence(seq, retain_boundary_cache=False)
         return [float(v) for v in logits]
+
+    def observe_sequence(self, text: str) -> Dict[str, object]:
+        """Inspect one received window with a single contextual forward pass.
+
+        The context vector pools bounded encoder states across the whole window.
+        It is a feature observation, not a ground-truth label or
+        an independent sensor measurement. No parameters or phase history learn
+        from this inspection; a controller must deliver observations explicitly.
+        """
+        self._require_python_head()
+        if not isinstance(text, str):
+            raise TypeError("text must be a string")
+        dimension = int(self._encoder_model_dim() or self.phase.dim)
+        context = np.zeros(dimension, dtype=float)
+        curvature = 0.0
+        logits = []
+        if len(text) > 1:
+            sequence = self._inference_sequence(text)
+            logits, caches = self._forward_sequence(sequence, include_context_summary=True, retain_boundary_cache=False)
+            if caches and "context_summary" in caches[0]:
+                context = caches[0]["context_summary"]
+            curvature = float(np.mean(np.abs(sequence.curvature)))
+        decoded = self.decode_with_logit_bias(text, logits=logits)
+        probabilities = self.boundary_probs_with_logit_bias(text, logits=logits)
+        return {"tokens": decoded["tokens"], "boundary_probabilities": probabilities,
+                "context_vector": context, "mean_curvature": curvature,
+                **self.backend_metadata()}
 
     def _resolve_logits(self, text: str, logits: Optional[Sequence[float]]) -> List[float]:
         self._require_python_head()
@@ -1413,7 +1539,7 @@ class BoundaryStudent:
         bias = float(logit_bias)
         logits = [val + bias for val in logits]
         labels = [0 for _ in logits]
-        _, _, _, marginals = self._crf_loss(logits, labels)
+        _, _, _, marginals = self._crf_loss(logits, labels, compute_gradients=False)
         probs = [float(m[1]) for m in marginals]
         self._backend_metadata("python", [], stage="boundary_probs_with_logit_bias")
         return np.array(probs, dtype=float)
@@ -1426,8 +1552,8 @@ class BoundaryStudent:
         if self._fitted_backend == "python" or (
             self._fitted_backend is None and (self.lexical_buckets or self._context_ready())
         ):
-            seq = self.build_sequences([text], [[text]])[0]
-            logits, _ = self._forward_sequence(seq)
+            seq = self._inference_sequence(text)
+            logits, _ = self._forward_sequence(seq, retain_boundary_cache=False)
             labels = self._viterbi(logits)
             tokens: List[str] = []
             start = 0
@@ -1470,8 +1596,8 @@ class BoundaryStudent:
                     extra={"backend": backend_id, "event": "boundary_backend_failure"},
                 )
                 self.compiled_backend = None
-        seq = self.build_sequences([text], [[text]])[0]
-        logits, _ = self._forward_sequence(seq)
+        seq = self._inference_sequence(text)
+        logits, _ = self._forward_sequence(seq, retain_boundary_cache=False)
         labels = self._viterbi(logits)
         tokens: List[str] = []
         start = 0

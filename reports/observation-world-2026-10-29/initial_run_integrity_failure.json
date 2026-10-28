@@ -1,0 +1,58 @@
+{
+  "status": "failed_receipt_roundtrip_integrity",
+  "client_date": "2026-10-29",
+  "contract_sha256": "f994da898250bbc4c01266ba7f961d8441788a1f6d1b42d3370d8f7232684767",
+  "episodes_executed": 2232,
+  "reason": "Integer wait-histogram keys were numerically sorted before JSON serialization but string keys sorted lexically on reload. Six result hashes fail roundtrip. All eight raw evaluation file hashes match the original summary. Initial exploratory numbers are retained but this run is not accepted as completed evidence.",
+  "checks": [
+    {
+      "condition": "fixed_channel_cost_0.002",
+      "file_sha256": "91f66b82475d5ccf9ba71049cd65896f600fa29154658736e342932ebfa70c36",
+      "summary_file_sha256_match": true,
+      "result_roundtrip_hash_match": false
+    },
+    {
+      "condition": "adaptive_cost_0.0005",
+      "file_sha256": "1a9b66a041c75a5760584fa87d8efd75358042106d455937ea7606584fa57ac9",
+      "summary_file_sha256_match": true,
+      "result_roundtrip_hash_match": false
+    },
+    {
+      "condition": "fixed_channel_cost_0.0005",
+      "file_sha256": "aa01969189b16b2e246cb458974a271e9e993c4b2c4a99ad1c6e1f6e01fa76f4",
+      "summary_file_sha256_match": true,
+      "result_roundtrip_hash_match": false
+    },
+    {
+      "condition": "fixed_mixture_cost_0.0005",
+      "file_sha256": "799915edd38619c07b281a0d34fd2ac45729ea808260a55f513f81a671031d52",
+      "summary_file_sha256_match": true,
+      "result_roundtrip_hash_match": false
+    },
+    {
+      "condition": "null_channel_cost_0.0005",
+      "file_sha256": "8c5d0b8ff184902a6a5070f3547f61910f7e25578d03d63272ba801e3d70e7d2",
+      "summary_file_sha256_match": true,
+      "result_roundtrip_hash_match": true
+    },
+    {
+      "condition": "adaptive_cost_0.002",
+      "file_sha256": "2ab8827b46d3d790dbf09707de1805815f3b580e0f1cafaa1aa134a72263b204",
+      "summary_file_sha256_match": true,
+      "result_roundtrip_hash_match": false
+    },
+    {
+      "condition": "fixed_mixture_cost_0.002",
+      "file_sha256": "fa933dc13c494d529cf94e7eca9dde326b91cc202790d6df91ed67215f117b6d",
+      "summary_file_sha256_match": true,
+      "result_roundtrip_hash_match": false
+    },
+    {
+      "condition": "null_channel_cost_0.002",
+      "file_sha256": "d67373762b55c1a3750a9e908b4f0e5ca7bd11c545727350e34aa8d47b09440d",
+      "summary_file_sha256_match": true,
+      "result_roundtrip_hash_match": true
+    }
+  ],
+  "corrective_action": "Normalize the results JSON tree before hashing; test multi-digit histogram keys; preserve the first run and repeat all conditions in a fresh output with a new code-bound contract."
+}
