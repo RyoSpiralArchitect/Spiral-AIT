@@ -124,6 +124,20 @@ class SpectralTransformerAdapter:
         """Return features and an explicit, single-use backward tape."""
         return self._forward(X, gate_pos, gate_mask, retain_cache=True)
 
+    @staticmethod
+    def _attention_weights(scores, bias):
+        """Reuse the owned score workspace without changing softmax order.
+
+        ``scores`` is a private result of the attention contraction, never the
+        caller's input or gate mask. The normalized buffer becomes the weights
+        retained by a requested backward tape.
+        """
+        scores += bias[None, :, :]
+        scores -= scores.max(axis=-1, keepdims=True)
+        np.exp(scores, out=scores)
+        scores /= scores.sum(axis=-1, keepdims=True) + 1e-12
+        return scores
+
     def _forward(self, X, gate_pos, gate_mask, *, retain_cache):
         H = np.asarray(X, dtype=float)
         tape = {"shape": H.shape, "layers": []}
@@ -177,11 +191,7 @@ class SpectralTransformerAdapter:
 
             bias = self.gate_bias[layer][0] * outer_mask + self.gate_bias[layer][1] * gate_mask_arr
             scores = np.einsum("lhd,mhd->hlm", Qh, Kh) * scale
-            scores = scores + bias[None, :, :]
-
-            scores = scores - scores.max(axis=-1, keepdims=True)
-            weights = np.exp(scores)
-            weights = weights / (weights.sum(axis=-1, keepdims=True) + 1e-12)
+            weights = self._attention_weights(scores, bias)
 
             # (heads, seq, seq) @ (heads, seq, head_dim) -> (heads, seq, head_dim)
             context = weights @ Vh.transpose(1, 0, 2)

@@ -44,4 +44,36 @@ jobs:
           assert selection["selection_mode"] == "posterior_risk"
           assert selection["selected_risk"] <= selection["baseline_risk"]
           assert all(row["epistemic"] == 0 for row in selection["candidates"])
+          from copy import deepcopy
+          from spiralreality_AIT_onepass_aifcore_integrated.integrated.acquisition import ContextAcquisitionModel
+          from spiralreality_AIT_onepass_aifcore_integrated.integrated.active_context import ActiveContextConfig, StringTextSource
+          session = m.active_text_session(ContextAcquisitionModel())
+          snapshot = deepcopy(m.state_dict())
+          assert session.plan() == session.plan()
+          assert m.state_dict() == snapshot
+          text = "Observe, then act. 文脈を読む。读取上下文。"
+          active = session.run(StringTextSource(text))
+          assert active["done"] and "".join(active["tokens"]) == text
+          assert m.last_observation_id > 0
+          assert active["metrics"]["max_window_chars_seen"] <= 96
+          from spiralreality_AIT_onepass_aifcore_integrated.integrated.observation_world import BayesianObservationWorld
+          channel = ContextAcquisitionModel(min_per_label=1)
+          for age in channel.age_edges:
+              for count in channel.action_chars:
+                  for _ in range(10):
+                      channel.record(0.5, 0.1, 0, age, count)
+                      channel.record(0.5, 0.9, 1, age, count)
+          world = BayesianObservationWorld(channel)
+          belief = world.initial_belief(0.5)
+          estimate = world.estimate(belief, 0.5, 4, 4)
+          assert estimate["information_gain"] > 0
+          posterior = estimate["joint_posteriors"][-1]
+          assert world.label_probability(posterior) > 0.5
+          session = m.active_text_session(channel, config=ActiveContextConfig(
+              observation_model="bayesian_regime", learn_dynamics=False))
+          snapshot = deepcopy(m.state_dict())
+          assert session.plan() == session.plan() and m.state_dict() == snapshot
+          joint = session.run(StringTextSource(text))
+          assert joint["done"] and "".join(joint["tokens"]) == text
+          assert joint["metrics"]["world_model_updates"] == 0
           PY

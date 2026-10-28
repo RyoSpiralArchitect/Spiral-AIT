@@ -434,7 +434,7 @@ class BoundaryStudent:
             if "".join(parts) != text or (text and any(not part for part in parts)):
                 raise ValueError(f"segments {index} must partition the original text exactly")
 
-    def _build_sequence(self, text: str, seg: Sequence[str]) -> BoundarySequence:
+    def _build_sequence(self, text: str, seg: Sequence[str], *, refresh_phase: bool = True) -> BoundarySequence:
         categories = np.array([_char_category(ch) for ch in text], dtype=int)
         labels = np.array(self._segments_to_boundaries(text, seg), dtype=int)
         seq = BoundarySequence(
@@ -446,8 +446,16 @@ class BoundaryStudent:
             lexical_features=self._lexical_features(text) if self.lexical_buckets else None,
             lexical_buckets=self.lexical_buckets,
         )
-        self._refresh_phase_features(seq)
+        if refresh_phase:
+            self._refresh_phase_features(seq)
         return seq
+
+    def _inference_sequence(self, text: str) -> BoundarySequence:
+        # A fresh sequence enters _forward_sequence immediately, where the
+        # current phase basis is read. Cached training sequences still refresh
+        # on every forward, including after a basis update or restore.
+        self._validate_training_data([text], [[text]])
+        return self._build_sequence(text, [text], refresh_phase=False)
 
     def _lexical_features(self, text: str) -> Tuple[Tuple[Tuple[int, int], ...], ...]:
         """Seven fixed positional templates with deterministic signed hashing.
@@ -553,7 +561,11 @@ class BoundaryStudent:
         vec = window_vec if hasattr(window_vec, "shape") else np.array(window_vec, dtype=self.dtype)
         return self.W_window @ vec + self.b_window
 
-    def _forward_sequence(self, seq: BoundarySequence, *, retain_encoder_cache: bool = False) -> Tuple[List[float], List[Dict[str, object]]]:
+    def _forward_sequence(self, seq: BoundarySequence, *, retain_encoder_cache: bool = False,
+                          include_context_summary: bool = False,
+                          retain_boundary_cache: bool = True) -> Tuple[List[float], List[Dict[str, object]]]:
+        if retain_encoder_cache and not retain_boundary_cache:
+            raise ValueError("Encoder backward tapes require boundary backward caches")
         # The basis changes during training and can be restored by early stopping.
         # Refresh cached train and validation features using the same basis as inference.
         self._refresh_phase_features(seq)
@@ -599,20 +611,25 @@ class BoundaryStudent:
             lexical_features = seq.lexical_features[idx] if self.lexical_buckets else ()
             lexical_score = sum(float(self.lexical_weights[bucket]) * count for bucket, count in lexical_features)
             logits.append(core + gate_score + ctx_score + lexical_score)
-            caches.append(
-                {
-                    "indices": indices,
-                    "window": window_vec,
-                    "pre": pre,
-                    "hidden": hidden,
-                    "gate_feats": gate_feats,
-                    "ctx_delta": ctx_delta,
-                    "ctx_hidden": ctx_hidden,
-                    "lexical_features": lexical_features,
-                }
-            )
+            if retain_boundary_cache:
+                caches.append(
+                    {
+                        "indices": indices,
+                        "window": window_vec,
+                        "pre": pre,
+                        "hidden": hidden,
+                        "gate_feats": gate_feats,
+                        "ctx_delta": ctx_delta,
+                        "ctx_hidden": ctx_hidden,
+                        "lexical_features": lexical_features,
+                    }
+                )
         if caches and encoder_tape is not None:
             caches[0]["encoder_tape"] = encoder_tape
+        if len(seq.labels) and include_context_summary and ctx_H is not None:
+            if not caches:
+                caches.append({})
+            caches[0]["context_summary"] = np.mean(np.tanh(ctx_H), axis=0)
         return logits, caches
 
     # ------------------------------------------------------------------
@@ -625,9 +642,12 @@ class BoundaryStudent:
             return m
         return m + math.log(sum(math.exp(v - m) for v in vals))
 
-    def _crf_loss(self, logits: List[float], labels: List[int]) -> Tuple[float, List[float], List[List[float]], List[List[float]]]:
+    def _crf_loss(self, logits: List[float], labels: List[int], *, compute_gradients: bool = True
+                  ) -> Tuple[float, Optional[np.ndarray], Optional[np.ndarray], List[np.ndarray]]:
         length = len(logits)
         if length == 0:
+            if not compute_gradients:
+                return 0.0, None, None, []
             return 0.0, [], [[0.0, 0.0], [0.0, 0.0]], []
         # Avoid float32 accumulation across long sequences, even when model
         # parameters are float32. Dynamic-programming scores use Python floats.
@@ -661,7 +681,7 @@ class BoundaryStudent:
                 ]
                 beta[i][state] = self._logsumexp(scores)
 
-        grad_logits = [0.0 for _ in range(length)]
+        grad_logits = [0.0 for _ in range(length)] if compute_gradients else None
         marginals: List[List[float]] = []
         for i in range(length):
             gamma0 = alpha[i][0] + beta[i][0]
@@ -675,8 +695,12 @@ class BoundaryStudent:
                 exponent = math.exp(difference)
                 p1 = exponent / (1.0 + exponent)
             p0 = 1.0 - p1
-            grad_logits[i] = p1 - labels[i]
+            if compute_gradients:
+                grad_logits[i] = p1 - labels[i]
             marginals.append([p0, p1])
+
+        if not compute_gradients:
+            return nll, None, None, [np.array(m, dtype=self.dtype) for m in marginals]
 
         grad_trans = [[0.0, 0.0], [0.0, 0.0]]
         for i in range(1, length):
@@ -1349,9 +1373,9 @@ class BoundaryStudent:
         total_loss = 0.0
         total_tp = total_fp = total_fn = 0
         for seq in sequences:
-            logits, _ = self._forward_sequence(seq)
+            logits, _ = self._forward_sequence(seq, retain_boundary_cache=False)
             labels = self._labels_to_int(seq.labels)
-            loss, _, _, marginals = self._crf_loss(logits, labels)
+            loss, _, _, marginals = self._crf_loss(logits, labels, compute_gradients=False)
             total_loss += loss
             preds = self._viterbi(logits)
             tp, fp, fn = self._boundary_confusion(preds, labels)
@@ -1412,10 +1436,10 @@ class BoundaryStudent:
             if len(text) <= 1:
                 self._backend_metadata("python", fallbacks, stage="boundary_probs")
                 return np.zeros(0, dtype=float)
-            seq = self.build_sequences([text], [[text]])[0]
-            logits, _ = self._forward_sequence(seq)
+            seq = self._inference_sequence(text)
+            logits, _ = self._forward_sequence(seq, retain_boundary_cache=False)
             labels = self._labels_to_int(seq.labels)
-            _, _, _, marginals = self._crf_loss(logits, labels)
+            _, _, _, marginals = self._crf_loss(logits, labels, compute_gradients=False)
             probs = [m[1] for m in marginals]
             self._backend_metadata("python", fallbacks, stage="boundary_probs")
             return np.array(probs, dtype=float)
@@ -1448,10 +1472,10 @@ class BoundaryStudent:
         if len(text) <= 1:
             self._backend_metadata("python", fallbacks, stage="boundary_probs")
             return np.zeros(0, dtype=float)
-        seq = self.build_sequences([text], [[text]])[0]
-        logits, _ = self._forward_sequence(seq)
+        seq = self._inference_sequence(text)
+        logits, _ = self._forward_sequence(seq, retain_boundary_cache=False)
         labels = self._labels_to_int(seq.labels)
-        _, _, _, marginals = self._crf_loss(logits, labels)
+        _, _, _, marginals = self._crf_loss(logits, labels, compute_gradients=False)
         probs = [m[1] for m in marginals]
         self._backend_metadata("python", fallbacks, stage="boundary_probs")
         return np.array(probs, dtype=float)
@@ -1460,9 +1484,36 @@ class BoundaryStudent:
         self._require_python_head()
         if len(text) <= 1:
             return []
-        seq = self.build_sequences([text], [[text]])[0]
-        logits, _ = self._forward_sequence(seq)
+        seq = self._inference_sequence(text)
+        logits, _ = self._forward_sequence(seq, retain_boundary_cache=False)
         return [float(v) for v in logits]
+
+    def observe_sequence(self, text: str) -> Dict[str, object]:
+        """Inspect one received window with a single contextual forward pass.
+
+        The context vector pools bounded encoder states across the whole window.
+        It is a feature observation, not a ground-truth label or
+        an independent sensor measurement. No parameters or phase history learn
+        from this inspection; a controller must deliver observations explicitly.
+        """
+        self._require_python_head()
+        if not isinstance(text, str):
+            raise TypeError("text must be a string")
+        dimension = int(self._encoder_model_dim() or self.phase.dim)
+        context = np.zeros(dimension, dtype=float)
+        curvature = 0.0
+        logits = []
+        if len(text) > 1:
+            sequence = self._inference_sequence(text)
+            logits, caches = self._forward_sequence(sequence, include_context_summary=True, retain_boundary_cache=False)
+            if caches and "context_summary" in caches[0]:
+                context = caches[0]["context_summary"]
+            curvature = float(np.mean(np.abs(sequence.curvature)))
+        decoded = self.decode_with_logit_bias(text, logits=logits)
+        probabilities = self.boundary_probs_with_logit_bias(text, logits=logits)
+        return {"tokens": decoded["tokens"], "boundary_probabilities": probabilities,
+                "context_vector": context, "mean_curvature": curvature,
+                **self.backend_metadata()}
 
     def _resolve_logits(self, text: str, logits: Optional[Sequence[float]]) -> List[float]:
         self._require_python_head()
@@ -1488,7 +1539,7 @@ class BoundaryStudent:
         bias = float(logit_bias)
         logits = [val + bias for val in logits]
         labels = [0 for _ in logits]
-        _, _, _, marginals = self._crf_loss(logits, labels)
+        _, _, _, marginals = self._crf_loss(logits, labels, compute_gradients=False)
         probs = [float(m[1]) for m in marginals]
         self._backend_metadata("python", [], stage="boundary_probs_with_logit_bias")
         return np.array(probs, dtype=float)
@@ -1501,8 +1552,8 @@ class BoundaryStudent:
         if self._fitted_backend == "python" or (
             self._fitted_backend is None and (self.lexical_buckets or self._context_ready())
         ):
-            seq = self.build_sequences([text], [[text]])[0]
-            logits, _ = self._forward_sequence(seq)
+            seq = self._inference_sequence(text)
+            logits, _ = self._forward_sequence(seq, retain_boundary_cache=False)
             labels = self._viterbi(logits)
             tokens: List[str] = []
             start = 0
@@ -1545,8 +1596,8 @@ class BoundaryStudent:
                     extra={"backend": backend_id, "event": "boundary_backend_failure"},
                 )
                 self.compiled_backend = None
-        seq = self.build_sequences([text], [[text]])[0]
-        logits, _ = self._forward_sequence(seq)
+        seq = self._inference_sequence(text)
+        logits, _ = self._forward_sequence(seq, retain_boundary_cache=False)
         labels = self._viterbi(logits)
         tokens: List[str] = []
         start = 0

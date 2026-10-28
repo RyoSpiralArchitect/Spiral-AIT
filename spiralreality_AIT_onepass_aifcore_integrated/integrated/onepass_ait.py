@@ -22,6 +22,14 @@ from .streaming_inference import ChunkedStreamingSegmenter
 from .utils import is_punct, is_space, seeded_vector, sigmoid, unit
 
 
+# Retain the original callables so class-level hooks, as well as per-instance
+# hooks, use conservative rollback rather than the append-only fast path.
+_STOCK_DYNAMICS_METHODS = {
+    name: getattr(LatentDynamicsModel, name)
+    for name in ("record", "should_train", "train", "_loss_and_gradients", "_validate_config", "_inputs", "_vector")
+}
+
+
 @dataclass
 class GateDiagnostics:
     gate_trace: List[float]
@@ -125,6 +133,7 @@ class OnePassAIT:
         self.last_gate_mask: Optional[np.ndarray] = None
         self._encode_cache: OrderedDict[str, Dict[str, np.ndarray]] = OrderedDict()
         self._last_segment_metadata: Dict[str, object] = {}
+        self.last_observation_id = 0
 
     def train_student(
         self,
@@ -387,20 +396,104 @@ class OnePassAIT:
         policy: str,
         ctx_vec: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
+        """Pure transition forecast; no training, phase update, or observation.
+
+        Until actual transition observations have fitted the dynamics, this uses
+        an explicitly untrained persistence prior. Use ``forecast_transition`` when
+        the provenance label is needed. Hypothetical branches never enter replay.
+        """
+        forecast = self.forecast_transition(mu, Sigma, policy, ctx_vec)
+        return forecast["mean"], forecast["covariance"]
+
+    def forecast_transition(self, mu, Sigma, policy, ctx_vec) -> Dict[str, object]:
+        if policy not in self.policy_vecs:
+            raise ValueError("Unknown transition policy")
+        mu = self.dynamics._vector(mu, self.latent_dim, "mu")
+        ctx_vec = self.dynamics._vector(ctx_vec, self.latent_dim, "ctx_vec")
+        Sigma = np.asarray(Sigma, dtype=float)
+        if Sigma.shape != (self.latent_dim, self.latent_dim) or not np.all(np.isfinite(Sigma)):
+            raise ValueError("Sigma must be a finite covariance matrix")
+        if not np.allclose(Sigma, Sigma.T) or np.min(np.linalg.eigvalsh(Sigma)) < -1e-10:
+            raise ValueError("Sigma must be symmetric positive semidefinite")
         policy_vec = unit(self.policy_vecs[policy])
-        teacher_delta = (
-            0.22 * policy_vec
-            + 0.12 * self.goal_vec * (1.0 / (1.0 + np.linalg.norm(mu)))
-            + 0.15 * unit(ctx_vec)
-        )
-        teacher_mu = mu + teacher_delta
-        teacher_Sigma = 0.9 * Sigma + 0.05 * np.eye(self.latent_dim)
-        self.dynamics.record(mu, policy_vec, ctx_vec, teacher_mu)
-        if len(self.dynamics.buffer) >= 32:
-            self.dynamics.train()
         if self.dynamics.is_ready():
-            return self.dynamics.predict(mu, policy_vec, ctx_vec)
-        return teacher_mu, teacher_Sigma
+            mean, covariance = self.dynamics.predict(mu, policy_vec, ctx_vec, prior_covariance=Sigma)
+            source = "observed_transition_model"
+        else:
+            # This is a prior, not an observation or a training target. Process
+            # uncertainty grows instead of shrinking without incoming evidence.
+            mean, covariance = mu.copy(), Sigma + 0.05 * np.eye(self.latent_dim)
+            source = "untrained_persistence_forecast_only"
+        return {"mean": mean, "covariance": covariance, "source": source,
+                "is_observation": False, "recorded_observations": self.dynamics.recorded_observations}
+
+    def observe_transition(self, mu, policy, ctx_vec, observed_mu, *, observation_id: int,
+                           source: str, simulated: bool = False, train: bool = True) -> Dict[str, object]:
+        """Assimilate a delivered transition once; predictions are never targets.
+
+        IDs strictly increase and survive checkpoints. ``observed_mu`` must come
+        from newly delivered data, not ``predict_next``. Simulations are labeled
+        and consumed without updating real-transition replay or global phases.
+        """
+        from copy import deepcopy
+
+        try:
+            identifier = operator.index(observation_id)
+        except TypeError as exc:
+            raise ValueError("observation_id must be a positive integer") from exc
+        if isinstance(observation_id, bool) or identifier <= self.last_observation_id:
+            raise ValueError("observation_id must strictly increase; duplicate or out-of-order delivery")
+        if not isinstance(source, str) or not source.strip():
+            raise ValueError("An explicit observation source is required")
+        if not isinstance(simulated, bool) or not isinstance(train, bool):
+            raise ValueError("simulated and train must be booleans")
+        if policy not in self.policy_vecs:
+            raise ValueError("Unknown transition policy")
+        mu = self.dynamics._vector(mu, self.latent_dim, "mu").copy()
+        ctx_vec = self.dynamics._vector(ctx_vec, self.latent_dim, "ctx_vec").copy()
+        observed = self.dynamics._vector(observed_mu, self.latent_dim, "observed_mu").copy()
+        training = {"trained": False}
+        if not simulated:
+            # Stock recording appends a new row, and fitting only reads existing
+            # replay arrays. Stage the list rather than copying every replay
+            # vector on every delivered observation. Customized implementations
+            # retain the conservative full checkpoint used by the public hook.
+            stock_dynamics = type(self.dynamics) is LatentDynamicsModel and all(
+                getattr(getattr(self.dynamics, name), "__func__", getattr(self.dynamics, name)) is original
+                for name, original in _STOCK_DYNAMICS_METHODS.items()
+            )
+            stock_phases = getattr(self.update_global_phases, "__func__", None) is _STOCK_PHASE_UPDATE
+            staged = stock_dynamics and stock_phases
+            old_dynamics = self.dynamics.__dict__.copy() if staged else deepcopy(self.dynamics).__dict__
+            replay = self.dynamics.buffer.copy() if staged else None
+            old_hist = {key: values.copy() for key, values in self._phi_hist.items()}
+            old_mix, old_time = self.R3_mix, self.R2_time
+            old_parameters = None
+            try:
+                if staged:
+                    self.dynamics.buffer = replay
+                self.dynamics.record(mu, unit(self.policy_vecs[policy]), ctx_vec, observed)
+                if train and self.dynamics.should_train():
+                    # Weight copies are needed only for a real fitting attempt,
+                    # including a failure after one or more optimizer updates.
+                    if staged:
+                        old_parameters = {name: getattr(self.dynamics, name).copy()
+                                          for name in ("W1", "b1", "W_mu", "b_mu", "W_sigma", "b_sigma")}
+                    training = self.dynamics.train()
+                self.update_global_phases(observed)
+            except Exception:
+                if old_parameters is not None:
+                    old_dynamics.update(old_parameters)
+                self.dynamics.__dict__.clear()
+                self.dynamics.__dict__.update(old_dynamics)
+                self._phi_hist, self.R3_mix, self.R2_time = old_hist, old_mix, old_time
+                raise
+        self.last_observation_id = int(identifier)
+        return {"observation_id": self.last_observation_id, "source": source,
+                "simulated": simulated, "recorded": not simulated,
+                "recorded_observations": self.dynamics.recorded_observations,
+                "observed_delta_norm": float(np.linalg.norm(observed - mu)),
+                "dynamics_ready": self.dynamics.is_ready(), "training": training}
 
     def update_global_phases(self, mu: np.ndarray) -> None:
         for key in ("AB", "BC", "CA"):
@@ -672,6 +765,16 @@ class OnePassAIT:
             min_boundary_confidence=min_boundary_confidence,
         )
 
+    def active_text_session(self, channel, config=None):
+        """Create a pull-based observer/actor with a frozen acquisition channel.
+
+        Planning cannot read the source. Delivered characters update the separate
+        latent world model and phase history; CRF labels are never self-generated
+        training targets. See ``active_context`` for the source/decision protocol.
+        """
+        from .active_context import ActiveTextSession
+        return ActiveTextSession(self, channel, config=config)
+
     def gate_diagnostics(self) -> GateDiagnostics:
         strengths = []
         for attn in self.last_attention:
@@ -716,12 +819,31 @@ class OnePassAIT:
             "student": self.student.export_state(),
             "encoder": encoder_state,
             "dynamics": self.dynamics.export_state(),
-            "phi_hist": self._phi_hist,
+            "phi_hist": {key: list(values) for key, values in self._phi_hist.items()},
+            "R3_mix": self.R3_mix,
+            "R2_time": self.R2_time,
+            "transition_observation_id": self.last_observation_id,
         }
 
     def load_state_dict(self, state: Dict[str, object]) -> None:
         if state.get("latent_dim") != self.latent_dim:
             raise ValueError("Latent dimension mismatch in checkpoint")
+        identifier = state.get("transition_observation_id", 0)
+        if isinstance(identifier, bool) or not isinstance(identifier, int) or identifier < 0:
+            raise ValueError("Invalid transition observation ID in checkpoint")
+        phase_mix, phase_time = float(state.get("R3_mix", 0.0)), float(state.get("R2_time", 0.0))
+        if not math.isfinite(phase_mix) or not math.isfinite(phase_time):
+            raise ValueError("Invalid global phase state in checkpoint")
+        from copy import deepcopy
+        checked_dynamics = deepcopy(self.dynamics)
+        checked_dynamics.load_state(state["dynamics"])
+        verified_phase = state.get("phi_hist", {}) if "transition_observation_id" in state else {}
+        phase_hist = {}
+        for key in ("AB", "BC", "CA"):
+            values = verified_phase.get(key, [])
+            if not isinstance(values, (list, tuple)) or len(values) > 6 or any(not math.isfinite(float(value)) for value in values):
+                raise ValueError("Invalid global phase history in checkpoint")
+            phase_hist[key] = [float(value) for value in values]
         # The phase is shared with the student. Reject ambiguous ownership or
         # unavailable fitted backends before changing any outer model state.
         self.student.validate_state_ownership(state["student"])
@@ -735,10 +857,16 @@ class OnePassAIT:
             self.encoder_handle.load_state(state["encoder"])
         else:
             self.encoder.load_state(state["encoder"])
-        self.dynamics.load_state(state["dynamics"])
-        self._phi_hist = {k: list(state.get("phi_hist", {}).get(k, [])) for k in ("AB", "BC", "CA")}
+        self.dynamics.__dict__.clear()
+        self.dynamics.__dict__.update(checked_dynamics.__dict__)
+        self._phi_hist = phase_hist
+        self.R3_mix, self.R2_time = phase_mix, phase_time
+        self.last_observation_id = identifier
         self._encode_cache.clear()
         self._last_segment_metadata = {}
         self.last_gate_trace = []
         self.last_attention = []
         self.last_gate_mask = None
+
+
+_STOCK_PHASE_UPDATE = OnePassAIT.update_global_phases

@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
+import math
 from typing import List, Tuple
 
 from .np_compat import np
-from .utils import sigmoid
 
 
 @dataclass
@@ -13,15 +13,25 @@ class DynamicsConfig:
     lr: float = 0.01
     epochs: int = 8
     batch_size: int = 16
+    max_grad_norm: float | None = 10.0
+    min_observations: int = 32
+    train_interval: int = 16
+    max_buffer: int = 2048
 
 
 class LatentDynamicsModel:
-    """Simple MLP-based dynamics approximator trained from teacher signals."""
+    """Residual model fitted to explicitly recorded transition observations.
+
+    Prediction is pure. New models optimize mean diagonal-Gaussian NLL with
+    positive softplus process variance. Legacy variance links remain available
+    for checkpoint inference, but legacy training is not real-observation evidence.
+    """
 
     def __init__(self, latent_dim: int, context_dim: int, seed: int = 0, cfg: DynamicsConfig | None = None):
         self.latent_dim = latent_dim
         self.context_dim = context_dim
         self.cfg = cfg or DynamicsConfig()
+        self._validate_config()
         rng = np.random.default_rng(seed)
         input_dim = latent_dim * 2 + context_dim
         self.W1 = rng.normal(scale=0.2, size=(self.cfg.hidden_dim, input_dim))
@@ -32,106 +42,168 @@ class LatentDynamicsModel:
         self.b_sigma = np.zeros(latent_dim)
         self.buffer: List[Tuple[np.ndarray, np.ndarray]] = []
         self.trained_steps = 0
+        self.recorded_observations = 0
+        self.trained_observations = 0
+        self.variance_link = "softplus_gaussian_nll_v2"
 
-    def _concat_inputs(self, *arrays) -> np.ndarray:
-        return np.concatenate(arrays)
+    def _validate_config(self):
+        for name in ("hidden_dim", "batch_size", "min_observations", "train_interval", "max_buffer"):
+            value = getattr(self.cfg, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                raise ValueError(f"{name} must be a positive integer")
+        if self.cfg.min_observations > self.cfg.max_buffer:
+            raise ValueError("min_observations must fit in max_buffer")
+        if isinstance(self.cfg.epochs, bool) or not isinstance(self.cfg.epochs, int) or self.cfg.epochs < 0:
+            raise ValueError("epochs must be a nonnegative integer")
+        if not math.isfinite(self.cfg.lr) or self.cfg.lr < 0:
+            raise ValueError("lr must be finite and nonnegative")
+        if self.cfg.max_grad_norm is not None and (not math.isfinite(self.cfg.max_grad_norm) or self.cfg.max_grad_norm <= 0):
+            raise ValueError("max_grad_norm must be finite and positive, or None")
 
-    def _outer(self, a, b) -> np.ndarray:
-        return np.outer(a, b)
+    @staticmethod
+    def _vector(value, dimension, name):
+        result = np.asarray(value, dtype=float)
+        if result.shape != (dimension,) or not np.all(np.isfinite(result)):
+            raise ValueError(f"{name} must be a finite vector of length {dimension}")
+        return result
 
-    def _zeros_like(self, arr) -> np.ndarray:
-        return np.zeros_like(arr)
+    def _inputs(self, mu, policy_vec, ctx_vec):
+        return np.concatenate((self._vector(mu, self.latent_dim, "mu"),
+                               self._vector(policy_vec, self.latent_dim, "policy_vec"),
+                               self._vector(ctx_vec, self.context_dim, "ctx_vec")))
 
-    def _tanh(self, arr) -> np.ndarray:
-        return np.tanh(arr)
-
-    def _diag(self, values) -> np.ndarray:
-        return np.diag(values)
-
-    def _forward(self, inputs: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        h = self._tanh(self.W1 @ inputs + self.b1)
+    def _forward(self, inputs):
+        h = np.tanh(self.W1 @ inputs + self.b1)
         delta = self.W_mu @ h + self.b_mu
-        sigma_logits = self.W_sigma @ h + self.b_sigma
-        sigma_diag = np.array([sigmoid(v) + 1e-3 for v in sigma_logits])
-        return delta, sigma_diag
+        logits = self.W_sigma @ h + self.b_sigma
+        if self.variance_link == "legacy_sigmoid_proxy_v1":
+            variance = 1.0 / (1.0 + np.exp(-np.clip(logits, -60, 60))) + 1e-3
+        else:
+            variance = np.logaddexp(0.0, logits) + 1e-3
+        return delta, variance
 
-    def predict(self, mu: np.ndarray, policy_vec: np.ndarray, ctx_vec: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
-        inputs = self._concat_inputs(mu, policy_vec, ctx_vec)
-        delta, sigma_diag = self._forward(inputs)
-        mu_next = mu + delta
-        Sigma_next = self._diag(sigma_diag)
-        return mu_next, Sigma_next
+    def predict(self, mu, policy_vec, ctx_vec, *, prior_covariance=None):
+        inputs = self._inputs(mu, policy_vec, ctx_vec)
+        delta, variance = self._forward(inputs)
+        covariance = np.diag(variance)
+        if prior_covariance is not None:
+            prior = np.asarray(prior_covariance, dtype=float)
+            if prior.shape != (self.latent_dim, self.latent_dim) or not np.all(np.isfinite(prior)):
+                raise ValueError("prior_covariance must be a finite square matrix")
+            h = np.tanh(self.W1 @ inputs + self.b1)
+            jacobian = np.eye(self.latent_dim) + (self.W_mu * (1 - h * h)) @ self.W1[:, :self.latent_dim]
+            covariance += jacobian @ prior @ jacobian.T
+        return inputs[:self.latent_dim] + delta, (covariance + covariance.T) * 0.5
 
-    def record(self, mu: np.ndarray, policy_vec: np.ndarray, ctx_vec: np.ndarray, target_mu: np.ndarray) -> None:
-        inputs = self._concat_inputs(mu, policy_vec, ctx_vec)
-        self.buffer.append((inputs, target_mu - mu))
-        if len(self.buffer) > 2048:
-            self.buffer = self.buffer[-2048:]
+    def record(self, mu, policy_vec, ctx_vec, target_mu):
+        inputs = self._inputs(mu, policy_vec, ctx_vec)
+        target = self._vector(target_mu, self.latent_dim, "target_mu")
+        self.buffer.append((inputs.copy(), (target - inputs[:self.latent_dim]).copy()))
+        self.buffer = self.buffer[-self.cfg.max_buffer:]
+        self.recorded_observations += 1
 
-    def train(self) -> None:
-        if not self.buffer:
-            return
-        cfg = self.cfg
+    def should_train(self):
+        return (len(self.buffer) >= self.cfg.min_observations
+                and (not self.trained_observations
+                     or self.recorded_observations - self.trained_observations >= self.cfg.train_interval))
+
+    def _loss_and_gradients(self, batch):
+        names = ("W1", "b1", "W_mu", "b_mu", "W_sigma", "b_sigma")
+        gradients = {name: np.zeros_like(getattr(self, name)) for name in names}
+        loss, count = 0.0, max(1, len(batch))
+        for inputs, target_delta in batch:
+            h = np.tanh(self.W1 @ inputs + self.b1)
+            delta = self.W_mu @ h + self.b_mu
+            logits = self.W_sigma @ h + self.b_sigma
+            variance = np.logaddexp(0.0, logits) + 1e-3
+            diff = delta - target_delta
+            loss += 0.5 * float(np.sum(np.log(2 * np.pi * variance) + diff * diff / variance)) / count
+            grad_mu = diff / variance / count
+            link_derivative = 1.0 / (1.0 + np.exp(-np.clip(logits, -700, 700)))
+            grad_sigma = 0.5 * (1.0 / variance - diff * diff / (variance * variance)) * link_derivative / count
+            gradients["W_mu"] += np.outer(grad_mu, h)
+            gradients["b_mu"] += grad_mu
+            gradients["W_sigma"] += np.outer(grad_sigma, h)
+            gradients["b_sigma"] += grad_sigma
+            grad_h = (self.W_mu.T @ grad_mu + self.W_sigma.T @ grad_sigma) * (1 - h * h)
+            gradients["W1"] += np.outer(grad_h, inputs)
+            gradients["b1"] += grad_h
+        return loss, gradients
+
+    def train(self):
+        self._validate_config()
+        if len(self.buffer) < self.cfg.min_observations or not self.cfg.epochs or not self.cfg.lr:
+            return {"trained": False, "recorded_observations": self.recorded_observations}
+        self.variance_link = "softplus_gaussian_nll_v2"
         rng = np.random.default_rng(self.trained_steps + 1)
-        for _ in range(cfg.epochs):
-            rng.shuffle(self.buffer)
-            for start in range(0, len(self.buffer), cfg.batch_size):
-                end = min(start + cfg.batch_size, len(self.buffer))
-                batch = self.buffer[start:end]
-                grad_W1 = self._zeros_like(self.W1)
-                grad_b1 = self._zeros_like(self.b1)
-                grad_W_mu = self._zeros_like(self.W_mu)
-                grad_b_mu = self._zeros_like(self.b_mu)
-                grad_W_sigma = self._zeros_like(self.W_sigma)
-                grad_b_sigma = self._zeros_like(self.b_sigma)
-                batch_size = max(1, len(batch))
-                for inputs, target_delta in batch:
-                    h = self._tanh(self.W1 @ inputs + self.b1)
-                    delta = self.W_mu @ h + self.b_mu
-                    sigma_logits = self.W_sigma @ h + self.b_sigma
-                    sigma_diag = np.array([sigmoid(v) + 1e-3 for v in sigma_logits])
-                    diff = delta - target_delta
-                    grad_mu = diff / batch_size
-                    grad_W_mu += self._outer(grad_mu, h)
-                    grad_b_mu += grad_mu
-                    abs_target = np.abs(target_delta)
-                    grad_sigma_logits = (sigma_diag - abs_target) / batch_size
-                    grad_W_sigma += self._outer(grad_sigma_logits, h)
-                    grad_b_sigma += grad_sigma_logits
-                    grad_h_raw = self.W_mu.T @ grad_mu + self.W_sigma.T @ grad_sigma_logits
-                    scale = 1.0 - np.square(h)
-                    grad_h = grad_h_raw * scale
-                    grad_W1 += self._outer(grad_h, inputs)
-                    grad_b1 += grad_h
-                scale = cfg.lr / batch_size
-                self.W1 -= scale * grad_W1
-                self.b1 -= scale * grad_b1
-                self.W_mu -= scale * grad_W_mu
-                self.b_mu -= scale * grad_b_mu
-                self.W_sigma -= scale * grad_W_sigma
-                self.b_sigma -= scale * grad_b_sigma
+        before = self._loss_and_gradients(self.buffer)[0]
+        for _ in range(self.cfg.epochs):
+            order = rng.permutation(len(self.buffer))
+            for start in range(0, len(order), self.cfg.batch_size):
+                batch = [self.buffer[int(index)] for index in order[start:start + self.cfg.batch_size]]
+                _, gradients = self._loss_and_gradients(batch)
+                norm = math.sqrt(sum(float(np.sum(value * value)) for value in gradients.values()))
+                scale = min(1.0, self.cfg.max_grad_norm / (norm + 1e-12)) if self.cfg.max_grad_norm else 1.0
+                for name, gradient in gradients.items():
+                    setattr(self, name, getattr(self, name) - self.cfg.lr * scale * gradient)
         self.trained_steps += 1
+        self.trained_observations = self.recorded_observations
+        return {"trained": True, "loss_before": before, "loss_after": self._loss_and_gradients(self.buffer)[0],
+                "recorded_observations": self.recorded_observations}
 
-    def is_ready(self) -> bool:
-        return self.trained_steps > 0
+    def is_ready(self):
+        return self.trained_observations >= self.cfg.min_observations and self.variance_link == "softplus_gaussian_nll_v2"
 
-    def export_state(self) -> dict:
-        return {
-            "W1": self.W1.tolist(),
-            "b1": self.b1.tolist(),
-            "W_mu": self.W_mu.tolist(),
-            "b_mu": self.b_mu.tolist(),
-            "W_sigma": self.W_sigma.tolist(),
-            "b_sigma": self.b_sigma.tolist(),
-            "trained_steps": self.trained_steps,
-        }
+    def export_state(self):
+        state = {name: getattr(self, name).tolist() for name in ("W1", "b1", "W_mu", "b_mu", "W_sigma", "b_sigma")}
+        state.update(version=2, config=asdict(self.cfg), trained_steps=self.trained_steps,
+                     recorded_observations=self.recorded_observations, trained_observations=self.trained_observations,
+                     variance_link=self.variance_link,
+                     buffer=[[inputs.tolist(), target.tolist()] for inputs, target in self.buffer])
+        return state
 
-    def load_state(self, state: dict) -> None:
-        self.W1 = np.array(state["W1"], dtype=float)
-        self.b1 = np.array(state["b1"], dtype=float)
-        self.W_mu = np.array(state["W_mu"], dtype=float)
-        self.b_mu = np.array(state["b_mu"], dtype=float)
-        self.W_sigma = np.array(state["W_sigma"], dtype=float)
-        self.b_sigma = np.array(state["b_sigma"], dtype=float)
-        self.trained_steps = int(state.get("trained_steps", 0))
-
+    def load_state(self, state):
+        if state.get("version") not in (None, 2):
+            raise ValueError("Unsupported dynamics checkpoint version")
+        config = state.get("config")
+        if config is None:
+            config = asdict(self.cfg)
+            legacy_hidden = np.asarray(state["b1"])
+            if legacy_hidden.ndim != 1:
+                raise ValueError("Invalid legacy dynamics hidden dimension")
+            config["hidden_dim"] = len(legacy_hidden)
+        cfg = DynamicsConfig(**config)
+        old_cfg = self.cfg
+        self.cfg = cfg
+        try:
+            self._validate_config()
+            shapes = {"W1": (cfg.hidden_dim, self.latent_dim * 2 + self.context_dim), "b1": (cfg.hidden_dim,),
+                      "W_mu": (self.latent_dim, cfg.hidden_dim), "b_mu": (self.latent_dim,),
+                      "W_sigma": (self.latent_dim, cfg.hidden_dim), "b_sigma": (self.latent_dim,)}
+            values = {name: np.asarray(state[name], dtype=float) for name in shapes}
+            if any(value.shape != shapes[name] or not np.all(np.isfinite(value)) for name, value in values.items()):
+                raise ValueError("Invalid dynamics weights in checkpoint")
+            recorded, trained = state.get("recorded_observations", 0), state.get("trained_observations", 0)
+            steps = state.get("trained_steps", 0)
+            if any(isinstance(value, bool) or not isinstance(value, int) for value in (recorded, trained, steps)):
+                raise ValueError("Dynamics observation counters must be integers")
+            if recorded < 0 or steps < 0 or not 0 <= trained <= recorded:
+                raise ValueError("Invalid dynamics observation counters")
+            link = state.get("variance_link", "legacy_sigmoid_proxy_v1")
+            if link not in ("legacy_sigmoid_proxy_v1", "softplus_gaussian_nll_v2"):
+                raise ValueError("Unknown dynamics variance link")
+            buffer = [(self._vector(pair[0], self.latent_dim * 2 + self.context_dim, "stored inputs").copy(),
+                       self._vector(pair[1], self.latent_dim, "stored target").copy()) for pair in state.get("buffer", [])]
+            if len(buffer) != min(recorded, cfg.max_buffer):
+                raise ValueError("Invalid dynamics replay buffer")
+            if link == "softplus_gaussian_nll_v2" and bool(steps) != bool(trained):
+                raise ValueError("Dynamics training counters are inconsistent")
+        except Exception:
+            self.cfg = old_cfg
+            raise
+        for name, value in values.items():
+            setattr(self, name, value.copy())
+        self.buffer = buffer
+        self.recorded_observations, self.trained_observations = recorded, trained
+        self.trained_steps = steps
+        self.variance_link = link
