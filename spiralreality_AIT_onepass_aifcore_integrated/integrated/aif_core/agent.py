@@ -161,7 +161,11 @@ class ActiveInferenceAgent:
                   "post_H": float(posterior.entropy()), "innovation_squared": surprise,
                   "information_gain_nats": max(0.0, float(information_gain))}
         if self.on_observation is not None:
-            result["learning"] = self.on_observation(prior.copy(), action, context.copy(), observation, posterior.copy())
+            # A frozen delivery still contains mutable arrays. The learning
+            # hook must not be able to corrupt the receipt retained for retry.
+            delivery = ExecutionObservation(observation.observation_id, observation.mean.copy(),
+                                             observation.covariance.copy(), observation.source, observation.simulated)
+            result["learning"] = self.on_observation(prior.copy(), action, context.copy(), delivery, posterior.copy())
         self.belief = posterior
         self.last_observation_id = observation.observation_id
         self._pending_execution = None
