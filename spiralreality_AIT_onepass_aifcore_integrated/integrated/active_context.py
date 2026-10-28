@@ -17,6 +17,7 @@ import math
 from numbers import Integral, Real
 
 from .acquisition import ContextAcquisitionModel
+from .observation_world import BayesianObservationWorld
 from .np_compat import np
 
 
@@ -66,6 +67,10 @@ class ActiveContextConfig:
     surprise_gain: float = 0.25
     learn_dynamics: bool = True
     trace_limit: int = 256
+    observation_model: str = "fixed_channel"
+    informative_prior: float = 0.5
+    learn_observation_regime: bool = True
+    model_epistemic_weight: float = 0.0
 
     def __post_init__(self):
         for name in ("initial_chars", "max_window_chars", "max_acquisitions_per_commit", "horizon"):
@@ -80,13 +85,21 @@ class ActiveContextConfig:
         if not actions or len(set(actions)) != len(actions) or max(actions) > self.max_window_chars:
             raise ValueError("Declare distinct bounded positive acquisition sizes")
         object.__setattr__(self, "action_chars", actions)
-        for name in ("char_cost", "call_cost", "epistemic_weight", "phase_gain", "surprise_gain"):
+        for name in ("char_cost", "call_cost", "epistemic_weight", "phase_gain", "surprise_gain", "model_epistemic_weight"):
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value < 0:
                 raise ValueError(f"{name} must be finite and nonnegative")
             object.__setattr__(self, name, float(value))
         if not isinstance(self.learn_dynamics, bool):
             raise ValueError("learn_dynamics must be boolean")
+        if self.observation_model not in ("fixed_channel", "bayesian_regime"):
+            raise ValueError("observation_model must be fixed_channel or bayesian_regime")
+        if (isinstance(self.informative_prior, bool) or not isinstance(self.informative_prior, Real)
+                or not math.isfinite(self.informative_prior) or not 0 <= self.informative_prior <= 1):
+            raise ValueError("informative_prior must be a finite probability")
+        object.__setattr__(self, "informative_prior", float(self.informative_prior))
+        if not isinstance(self.learn_observation_regime, bool):
+            raise ValueError("learn_observation_regime must be boolean")
 
 
 @dataclass(frozen=True)
@@ -133,6 +146,7 @@ class AcquisitionCandidate:
     expected_information_gain: float
     support: int
     supported: bool
+    expected_model_information_gain: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -150,6 +164,7 @@ class ContextDecision:
     phase_drive: float
     surprise_drive: float
     candidates: tuple[AcquisitionCandidate, ...]
+    informative_probability: float | None = None
 
 
 class ActiveSessionError(RuntimeError):
@@ -180,6 +195,8 @@ class ActiveTextSession:
         if not isinstance(self.config, ActiveContextConfig):
             raise TypeError("config must be ActiveContextConfig")
         self.channel = channel.snapshot()
+        self.observation_world = (BayesianObservationWorld(self.channel, informative_prior=self.config.informative_prior)
+                                  if self.config.observation_model == "bayesian_regime" else None)
         if not set(self.config.action_chars) <= set(self.channel.action_chars):
             raise ValueError("Configured acquisition sizes must be present in the learned channel")
         if self.config.horizon > 1 and self.channel.probability_edges != self.channel.outcome_edges:
@@ -215,7 +232,8 @@ class ActiveTextSession:
     def metrics(self):
         names = ("acquire_calls", "acquired_chars", "deliberate_acquire_calls", "commit_actions",
                  "forced_splits", "model_calls", "window_square_sum", "max_window_chars_seen",
-                 "budget_forced_cuts", "window_forced_cuts", "truncated_acquisitions", "channel_boundary_updates")
+                 "budget_forced_cuts", "window_forced_cuts", "truncated_acquisitions", "channel_boundary_updates",
+                 "observation_world_updates", "outcome_forecasts")
         return {**{name: self._metrics[name] for name in names},
                 "received_chars": self._received, "committed_chars": self._committed,
                 "wait_char_histogram": dict(self._waits), "policy_counts": dict(self._policies),
@@ -225,7 +243,10 @@ class ActiveTextSession:
                 "supported_decisions": self._metrics["supported_decisions"],
                 "forecast_evaluations": self._metrics["forecast_evaluations"],
                 "expected_information_gain_sum": float(self._metrics["expected_information_gain_sum"]),
-                "realized_entropy_reduction_sum": float(self._metrics["realized_entropy_reduction_sum"])}
+                "realized_entropy_reduction_sum": float(self._metrics["realized_entropy_reduction_sum"]),
+                "regime_information_gain_sum": float(self._metrics["regime_information_gain_sum"]),
+                "outcome_nll_sum": float(self._metrics["outcome_nll_sum"]),
+                "outcome_brier_sum": float(self._metrics["outcome_brier_sum"])}
 
     def _check_owner(self):
         if self.model.last_observation_id != self._model_observation_id:
@@ -236,21 +257,40 @@ class ActiveTextSession:
         weight = self.config.epistemic_weight * (1 + self.config.phase_gain * phase + self.config.surprise_gain * self._surprise)
         return phase, weight
 
-    def _value(self, probability, raw_probability, age, horizon, capacity, weight):
+    def _estimate(self, probability, raw_probability, age, count, joint=None):
+        if self.observation_world is None:
+            return self.channel.estimate(probability, age, count, conditioning_probability=raw_probability)
+        belief = self.observation_world.initial_belief(probability) if joint is None else joint
+        return self.observation_world.estimate(belief, raw_probability, age, count)
+
+    def _continuation_belief(self, estimate, outcome):
+        if self.observation_world is None:
+            return None
+        joint = estimate["joint_posteriors"][outcome]
+        # The explicit ablation forgets regime evidence AND label/regime
+        # correlation after each delivery, while retaining the label marginal.
+        # Full inference must retain the joint instead of repeatedly remixing.
+        if not self.config.learn_observation_regime:
+            joint = self.observation_world.initial_belief(estimate["posterior_probabilities"][outcome])
+        return joint
+
+    def _value(self, probability, raw_probability, age, horizon, capacity, weight, joint=None):
         best = min(probability, 1 - probability)
         if horizon <= 0:
             return best
         for count in self.config.action_chars:
             if count > capacity:
                 continue
-            estimate = self.channel.estimate(probability, age, count, conditioning_probability=raw_probability)
+            estimate = self._estimate(probability, raw_probability, age, count, joint)
             if not estimate["eligible"]:
                 continue
             future = math.fsum(mass * self._value(posterior,
                                (self.channel.outcome_edges[index] + self.channel.outcome_edges[index + 1]) / 2,
-                               age + count, horizon - 1, capacity - count, weight)
+                               age + count, horizon - 1, capacity - count, weight,
+                               self._continuation_belief(estimate, index))
                                for index, (mass, posterior) in enumerate(zip(estimate["outcome_probabilities"], estimate["posterior_probabilities"])) if mass)
-            value = future + count * self.config.char_cost + self.config.call_cost - weight * estimate["information_gain"]
+            value = (future + count * self.config.char_cost + self.config.call_cost - weight * estimate["information_gain"]
+                     - self.config.model_epistemic_weight * estimate.get("regime_information_gain", 0.0))
             best = min(best, value)
         return best
 
@@ -291,21 +331,28 @@ class ActiveTextSession:
         if not indices:
             return ContextDecision(action="Commit", requested_chars=0, reason="no_internal_uncertainty", **values)
         commit_risk = min(prior, 1 - prior)
+        horizon = min(self.config.horizon, self.config.max_acquisitions_per_commit - self._reads_since_commit)
+        joint = self._observation["world_beliefs"][focus] if self.observation_world is not None else None
+        if joint is not None:
+            values["informative_probability"] = self.observation_world.informative_probability(joint)
         candidates = [AcquisitionCandidate("Commit", 0, commit_risk, commit_risk, 0.0, 0, True)]
         for count in self.config.action_chars:
             if count > capacity:
                 continue
-            estimate = self.channel.estimate(prior, age, count, conditioning_probability=raw_prior)
+            estimate = self._estimate(prior, raw_prior, age, count, joint)
             if estimate["eligible"]:
                 continuation = math.fsum(mass * self._value(posterior,
                                          (self.channel.outcome_edges[index] + self.channel.outcome_edges[index + 1]) / 2,
-                                         age + count, self.config.horizon - 1, capacity - count, weight)
+                                         age + count, horizon - 1, capacity - count, weight,
+                                         self._continuation_belief(estimate, index))
                                          for index, (mass, posterior) in enumerate(zip(estimate["outcome_probabilities"], estimate["posterior_probabilities"])) if mass)
             else:
                 continuation = commit_risk
-            score = continuation + count * self.config.char_cost + self.config.call_cost - weight * estimate["information_gain"]
+            score = (continuation + count * self.config.char_cost + self.config.call_cost - weight * estimate["information_gain"]
+                     - self.config.model_epistemic_weight * estimate.get("regime_information_gain", 0.0))
             candidates.append(AcquisitionCandidate("Acquire", count, score, estimate["expected_risk"],
-                                                   estimate["information_gain"], estimate["support"], estimate["eligible"]))
+                                                   estimate["information_gain"], estimate["support"], estimate["eligible"],
+                                                   estimate.get("regime_information_gain", 0.0)))
         selected = min(candidates, key=lambda candidate: (candidate.total, candidate.requested_chars))
         values["candidates"] = tuple(candidates)
         return ContextDecision(action=selected.action, requested_chars=selected.requested_chars,
@@ -333,9 +380,11 @@ class ActiveTextSession:
             raise ValueError("Malformed contextual observation")
         raw = [float(probability) for probability in probabilities]
         return {**observation, "raw_boundary_probabilities": raw,
-                "boundary_probabilities": raw.copy(), "tokens": marginal_tokens(text, raw)}
+                "boundary_probabilities": raw.copy(), "tokens": marginal_tokens(text, raw),
+                "world_beliefs": [self.observation_world.initial_belief(p) for p in raw]
+                if self.observation_world is not None else None}
 
-    def _filter_extension(self, observation, text, requested_chars, actual_chars):
+    def _filter_extension(self, observation, text, requested_chars, actual_chars, focus_index=None):
         """Condition the old label belief on a genuinely observed raw-state bin.
 
         The channel is conditional on the previous raw bin, age, and action. We
@@ -344,22 +393,44 @@ class ActiveTextSession:
         """
         if (self._observation is None or actual_chars != requested_chars
                 or requested_chars not in self.channel.action_chars):
-            return observation, 0
+            return observation, 0, None
         beliefs = observation["boundary_probabilities"].copy()
+        world_beliefs = observation["world_beliefs"].copy() if self.observation_world is not None else None
         updated = 0
+        focused = None
         before_length = len(self._context + self._pending)
         for index, prior in enumerate(self._observation["boundary_probabilities"]):
             if index < len(self._context):
                 continue  # Already committed text is not a mutable hypothesis.
             raw_prior = self._observation["raw_boundary_probabilities"][index]
-            estimate = self.channel.estimate(prior, before_length - index - 1, requested_chars,
-                                              conditioning_probability=raw_prior)
+            joint = self._observation["world_beliefs"][index] if self.observation_world is not None else None
+            estimate = self._estimate(prior, raw_prior, before_length - index - 1, requested_chars, joint)
             if estimate["eligible"]:
                 outcome = min(len(self.channel.outcome_edges) - 2,
                               bisect_right(self.channel.outcome_edges, observation["raw_boundary_probabilities"][index]) - 1)
                 beliefs[index] = estimate["posterior_probabilities"][outcome]
+                if world_beliefs is not None:
+                    world_beliefs[index] = self._continuation_belief(estimate, outcome)
                 updated += 1
-        return {**observation, "boundary_probabilities": beliefs, "tokens": marginal_tokens(text, beliefs)}, updated
+                # Score only one predeclared focused outcome per acquisition.
+                # Neighboring boundary outcomes share text and are correlated.
+                if index == focus_index:
+                    masses = estimate["outcome_probabilities"]
+                    regime_before = estimate.get("informative_probability")
+                    regime_after = (self.observation_world.informative_probability(world_beliefs[index])
+                                    if world_beliefs is not None else None)
+                    focused = {"outcome_bin": outcome, "outcome_probability": masses[outcome],
+                               "outcome_nll": -math.log(masses[outcome]),
+                               "outcome_brier": math.fsum((p - int(i == outcome)) ** 2 for i, p in enumerate(masses)),
+                               "informative_probability_before": regime_before,
+                               "informative_probability_after": regime_after,
+                               "realized_regime_entropy_reduction": _entropy(regime_before) - _entropy(regime_after)
+                               if regime_before is not None else None,
+                               "joint_belief_before": joint,
+                               "joint_belief_after": world_beliefs[index] if world_beliefs is not None else None,
+                               "expected_regime_information_gain": estimate.get("regime_information_gain", 0.0)}
+        return {**observation, "boundary_probabilities": beliefs, "tokens": marginal_tokens(text, beliefs),
+                "world_beliefs": world_beliefs}, updated, focused
 
     def _record_inspection(self, text):
         self._metrics["model_calls"] += 1
@@ -435,8 +506,10 @@ class ActiveTextSession:
             raise ValueError("Acquired text exceeds the bounded observation window")
         inspected = self._inspect(work) if observation.text else self._observation
         channel_updates = 0
+        outcome_forecast = None
         if observation.text:
-            inspected, channel_updates = self._filter_extension(inspected, work, decision.requested_chars, len(observation.text))
+            inspected, channel_updates, outcome_forecast = self._filter_extension(
+                inspected, work, decision.requested_chars, len(observation.text), decision.focus_index)
         before_p = decision.probability
         after_p = None
         if inspected is not None and decision.focus_index is not None:
@@ -476,6 +549,13 @@ class ActiveTextSession:
             self._metrics["realized_entropy_reduction_sum"] += realized
         self._metrics["truncated_acquisitions"] += int(not full_extension)
         self._metrics["channel_boundary_updates"] += channel_updates
+        if outcome_forecast is not None:
+            self._metrics["outcome_forecasts"] += 1
+            self._metrics["outcome_nll_sum"] += outcome_forecast["outcome_nll"]
+            self._metrics["outcome_brier_sum"] += outcome_forecast["outcome_brier"]
+            self._metrics["regime_information_gain_sum"] += outcome_forecast["expected_regime_information_gain"]
+        self._metrics["observation_world_updates"] += channel_updates if (self.observation_world is not None
+                                                                         and self.config.learn_observation_regime) else 0
         self._version += 1
         self._retry = None
         self._event(decision, acquired_chars=len(observation.text), source=observation.source, eof=observation.eof,
@@ -485,6 +565,7 @@ class ActiveTextSession:
                     raw_observed_probability=float(inspected["raw_boundary_probabilities"][decision.focus_index])
                     if inspected is not None and decision.focus_index is not None and decision.focus_index < len(inspected["raw_boundary_probabilities"]) else None,
                     forecast_full_extension=full_extension, matched_forecast=matched_forecast,
+                    outcome_forecast=outcome_forecast,
                     channel_boundary_updates=channel_updates, prediction_error=error, observation_receipt=receipt)
         return {"tokens": [], "done": False, "decision": decision}
 
