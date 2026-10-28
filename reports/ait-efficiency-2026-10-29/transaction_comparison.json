@@ -1,0 +1,32 @@
+{
+  "kind": "synthetic_observation_transaction_resource_comparison",
+  "parent_contract_sha256": "4411ead087ebf46d04f671acb3e8f43e7aff479d09b51bbf9f5ee6d549c9d381",
+  "exact_initial_final_state_and_frozen_weights_gate": "passed",
+  "scope": "Deterministic provided numeric fixtures; no text, gold labels, encoder forward, or fitting. Setup and hashes are outside timing. Five fresh-fixture untraced passes measure only delivered observation calls. A separate fresh-fixture pass measures peak Python-traced allocations; traced elapsed time is never used for speed. This is bookkeeping evidence, not end-to-end speed, process RSS, real-task accuracy, or learning efficacy.",
+  "receipt_sha256": {
+    "transaction-baseline.json": "846fc5b0da893b07be6cddfff17bc2469b52d479bc08b0029d430d8e9733b926",
+    "transaction-optimized.json": "10f1de33ca37186bfd2db94537eafeccbecf0c0b8b086d776de68b9546ee1ac8"
+  },
+  "results": [
+    {
+      "initial_replay_rows": 150,
+      "final_replay_rows": 214,
+      "baseline_median_ms_per_arrival": 0.29281184375,
+      "optimized_median_ms_per_arrival": 0.021100265625,
+      "speedup": 13.877163868642057,
+      "baseline_traced_peak_bytes": 344872,
+      "optimized_traced_peak_bytes": 55224,
+      "peak_allocation_reduction_fraction": 0.83987102461203
+    },
+    {
+      "initial_replay_rows": 2048,
+      "final_replay_rows": 2048,
+      "baseline_median_ms_per_arrival": 2.842248046875,
+      "optimized_median_ms_per_arrival": 0.031985671875,
+      "speedup": 88.86003889436822,
+      "baseline_traced_peak_bytes": 2340200,
+      "optimized_traced_peak_bytes": 100120,
+      "peak_allocation_reduction_fraction": 0.9572173318519784
+    }
+  ]
+}

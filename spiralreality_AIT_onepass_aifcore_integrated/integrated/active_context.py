@@ -307,11 +307,10 @@ class ActiveTextSession:
             return ContextDecision(action="Done" if self._eof else "Acquire", requested_chars=0 if self._eof else min(self.config.initial_chars, available),
                                    reason="end_of_source" if self._eof else "initial_context", **values)
         context_len = len(self._context)
-        tokens = self._pending_tokens(self._observation, context_len)
-        token_length = len(tokens[0])
+        token_length = len(self._first_pending_token(self._observation, context_len))
         first_end = context_len + token_length
         probabilities = self._observation["boundary_probabilities"]
-        indices = list(range(context_len, min(first_end, len(probabilities))))
+        indices = range(context_len, min(first_end, len(probabilities)))
         if indices:
             focus = max(indices, key=lambda i: (_entropy(float(probabilities[i])), -i))
             prior = float(probabilities[focus])
@@ -359,14 +358,16 @@ class ActiveTextSession:
                                reason="modeled_value_of_context" if selected.requested_chars else "commit_has_lower_cost", **values)
 
     @staticmethod
-    def _pending_tokens(observation, context_len):
-        result, offset = [], 0
+    def _first_pending_token(observation, context_len):
+        # Planning and committing consume only the first pending token. Avoid
+        # slicing/retaining every later token for each one-token decision.
+        offset = 0
         for token in observation["tokens"]:
             end = offset + len(token)
             if end > context_len:
-                result.append(token[max(0, context_len - offset):])
+                return token[max(0, context_len - offset):]
             offset = end
-        return result
+        raise ValueError("The current observation contains no pending token")
 
     def _inspect(self, text):
         observation = self.model.student.observe_sequence(text)
@@ -447,6 +448,10 @@ class ActiveTextSession:
     def execute(self, decision: ContextDecision, source=None, *, observation=None):
         if decision != self.plan():
             raise ValueError("Decision is stale or does not match the current pure plan")
+        return self._execute_current(decision, source, observation=observation)
+
+    def _execute_current(self, decision: ContextDecision, source=None, *, observation=None):
+        """Execute a plan just computed or validated for this single-owner session."""
         if decision.action == "Done":
             if observation is not None:
                 raise ValueError("A completed session does not accept another observation")
@@ -454,7 +459,7 @@ class ActiveTextSession:
         if decision.action == "Commit":
             if observation is not None:
                 raise ValueError("Commit does not accept a new observation")
-            token = self._pending_tokens(self._observation, len(self._context))[0]
+            token = self._first_pending_token(self._observation, len(self._context))
             pending = self._pending[len(token):]
             context = (self._context + token)[-self.config.context_chars:] if self.config.context_chars else ""
             work = context + pending
@@ -570,7 +575,14 @@ class ActiveTextSession:
         return {"tokens": [], "done": False, "decision": decision}
 
     def step(self, source):
-        return self.execute(self.plan(), source)
+        # No external code runs between planning and dispatch. The public
+        # execute() still replans to validate independently supplied decisions.
+        decision = self.plan()
+        if getattr(self.execute, "__func__", None) is _STOCK_CONTEXT_EXECUTE:
+            return self._execute_current(decision, source)
+        # Existing subclass, class and instance execution hooks keep receiving
+        # every step and retain their own validation/instrumentation behavior.
+        return self.execute(decision, source)
 
     def run(self, source, *, max_steps=100000):
         limit = _integer(max_steps, "max_steps", 1)
@@ -588,6 +600,9 @@ class ActiveTextSession:
             raise ActiveSessionError("Active run interrupted; emitted tokens are in partial_result and the acquired receipt is retained",
                                      partial(False)) from error
         return partial(False)
+
+
+_STOCK_CONTEXT_EXECUTE = ActiveTextSession.execute
 
 
 __all__ = ["ActiveContextConfig", "ActiveTextSession", "ContextDecision", "TextObservation", "StringTextSource",
