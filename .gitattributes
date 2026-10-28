@@ -6,3 +6,7 @@ reports/policy-learning-2026-10-08/*.json linguist-generated=true
 reports/policy-learning-2026-10-08/*.jsonl linguist-generated=true
 reports/active-context-2026-10-27/*.json linguist-generated=true
 reports/active-context-2026-10-27/*.jsonl linguist-generated=true
+reports/observation-world-2026-10-29/*.json linguist-generated=true
+reports/observation-world-2026-10-29/*.jsonl linguist-generated=true
+reports/ait-efficiency-2026-10-29/*.json linguist-generated=true
+reports/ait-efficiency-2026-10-29/*.jsonl linguist-generated=true

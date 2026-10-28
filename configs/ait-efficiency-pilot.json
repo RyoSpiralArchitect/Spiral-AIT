@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "study": "pud-identical-ait-efficiency-pilot-v1",
+  "baseline_revision": "ce446e34f941ae25970652f2450e5d2b68d8b23e",
+  "baseline_directory": ".cache/ait-efficiency-baseline-ce446e3",
+  "source_study": ".cache/active-context-pilot-v1",
+  "source_contract_sha256": "ff8bd11f9d24ded054d67852ab31ed2bd025eafe489ff286015d65b6fcc556ab",
+  "source_artifact_sha256": {
+    "plan.json": "194e712d6a9a021352c966c7b1bc6963c1a7e72778a9e37c085b16bd0ab950b5",
+    "channel.json": "ef8effece6eefcd64bc9933d02e1a3557b3399a7cb059930239d373deabafd96",
+    "channel_fit.json": "9920db6e6425f5ca6f320472e38151edd431ac6d638153dc339ebde873428e61",
+    "warm_started_model.json": "ef58dad56beeb497a5f3879b23470804f29b521b47c2e57cbe37dedf66924eb4",
+    "warm_start.json": "395e3252a8f5776e645f8cd55b00802611a585f1630dd3b5308c8acb214c4f7c"
+  },
+  "modes": ["fixed_channel", "bayesian_regime"],
+  "char_cost": 0.002,
+  "timing_repeats": 3,
+  "memory_repeats": 1,
+  "order_seed": 20261029,
+  "resource_probe_script": "scripts/probe_observation_transactions.py",
+  "measurement_protocol": "Each condition/repetition runs in a fresh isolated subprocess with NumPy backend and three BLAS thread variables fixed to one. One unmeasured same-input warmup per language precedes measurement. All279 sentences are evaluated in every worker; weights reset per sentence. Episode wall time surrounds session construction/run only, excluding common weight restoration, explicit GC, hashing, scoring and serialization. Speed uses only three untraced repetitions and retains every repeat. Separate memory workers trace allocations only during each episode: Python peak/retained bytes exclude restoration and preloaded data, include NumPy buffers registered with tracemalloc, and exclude untracked native allocations. Memory-worker elapsed times never enter timing aggregates. Process RSS is ru_maxrss converted from bytes on Darwin or KiB on Linux; whole-worker high-water includes startup, checkpoint/input parsing, warmup, restoration, verification and scoring. Its pre-loop high-water floor is reported; it is not per-episode live RSS or a pure model-memory estimate. Local sequential measurements are descriptive, not a platform speed guarantee.",
+  "protocol": "Accuracy-preserving baseline/optimized comparison on the already inspected PUD test partition and pinned historical channel/weights. Export baseline commit ce446e3 into an isolated source tree and fingerprint both implementations plus the common worker. Two controller modes use identical acquisition costs, bounded windows, segmenter, channel and posterior rules. Older latent-weight fitting and phase/scalar surprise drives are disabled in both variants. Freeze all16 worker jobs before execution. Reject any mismatch in per-sentence prediction hashes, full behavior hashes including every retained candidate plan/trace/metric, continuation-state hashes, boundaryF1 or nonwhitespaceF1 across variants, timing repeats or memory passes. Three timing repetitions plus one separate memory pass per variant/mode yield4,464 episodes. No best-run selection or test-driven policy change. Runtime gold labels are used only for after-episode scoring. Raw corpus text, detailed worker receipts and weights stay local; public results contain identities, hashes, aggregate scores and measurements. Equality on exposed PUD shows preservation for these cases, not independent-corpus generalization, calibrated correctness, semantic information or production readiness."
+}

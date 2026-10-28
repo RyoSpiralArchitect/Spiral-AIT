@@ -134,6 +134,60 @@ def test_failed_execution_hook_retains_delivery_and_original_forecast_without_re
     np.testing.assert_allclose(agent.belief.mu, [2.6])
 
 
+@pytest.mark.parametrize("retry", ["same_delivery", "implicit", "checkpoint"])
+def test_mutating_failed_hook_cannot_change_the_retained_delivery_or_retry_posterior(retry):
+    calls = {"source": 0, "hook": 0}
+    original = ExecutionObservation(1, np.array([3.0]), np.array([[0.5]]), "sensor")
+    def source(*args):
+        calls["source"] += 1
+        return original
+    def hook(prior, action, context, observation, posterior):
+        calls["hook"] += 1
+        observation.mean[:] = 99
+        observation.covariance[:] = 999
+        prior.mu[:] = -99
+        context[:] = -99
+        posterior.mu[:] = -99
+        if calls["hook"] == 1:
+            raise RuntimeError("mutated hook failure")
+        return {"accepted": observation.observation_id}
+    agent = simple_agent(observation_fn=source, on_observation=hook)
+    with pytest.raises(RuntimeError, match="mutated hook failure"):
+        agent.act_and_update("look")
+    assert calls == {"source": 1, "hook": 1}
+    np.testing.assert_array_equal(original.mean, [3.0])
+    np.testing.assert_array_equal(agent.pending_observation.mean, [3.0])
+    np.testing.assert_array_equal(agent.pending_observation.covariance, [[0.5]])
+    assert agent.last_observation_id == 0
+    if retry == "checkpoint":
+        saved = json.loads(json.dumps(agent.state_dict()))
+        restored = simple_agent(observation_fn=lambda *args: pytest.fail("source reread"), on_observation=hook)
+        restored.load_state_dict(saved)
+        agent = restored
+    result = agent.act_and_update("look", **({"observation": original} if retry == "same_delivery" else {}))
+    assert result["learning"] == {"accepted": 1}
+    assert result["obs_mu_norm"] == 3.0
+    assert calls == {"source": 1, "hook": 2}
+    np.testing.assert_allclose(agent.belief.mu, [2.6])
+    np.testing.assert_allclose(agent.belief.Sigma, [[0.4]])
+    assert agent.last_observation_id == 1 and agent.pending_action is None
+
+
+def test_successful_mutating_hook_also_receives_an_independent_delivery():
+    original = ExecutionObservation(1, np.array([3.0]), np.array([[0.5]]), "sensor")
+    def hook(prior, action, context, observation, posterior):
+        observation.mean[:] = -99
+        observation.covariance[:] = 999
+        return {"accepted": observation.observation_id}
+    agent = simple_agent(on_observation=hook)
+    result = agent.act_and_update("look", observation=original)
+    np.testing.assert_array_equal(original.mean, [3.0])
+    np.testing.assert_array_equal(original.covariance, [[0.5]])
+    np.testing.assert_allclose(agent.belief.mu, [2.6])
+    np.testing.assert_allclose(agent.belief.Sigma, [[0.4]])
+    assert result["obs_mu_norm"] == 3.0 and agent.last_observation_id == 1
+
+
 def test_pending_execution_checkpoint_resumes_without_callback_or_reforecast():
     observation = ExecutionObservation(1, np.array([3.0]), np.array([[0.5]]), "sensor")
     def fail(*args):
