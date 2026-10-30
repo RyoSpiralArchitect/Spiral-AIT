@@ -29,9 +29,13 @@ jobs:
           cd /tmp
           /tmp/ait-wheel/bin/python -c "from spiralreality_AIT_onepass_aifcore_integrated.integrated.onepass_ait import OnePassAIT; m = OnePassAIT(latent_dim=16, encoder_layers=1); t = 'Hello world.'; assert ''.join(m.segment_text(t, use_aif=True)) == t"
           /tmp/ait-wheel/bin/python - <<'PY'
+          from copy import deepcopy
+          from dataclasses import replace
           import json
           import numpy as np
           from spiralreality_AIT_onepass_aifcore_integrated.integrated.onepass_ait import OnePassAIT, StudentTrainingConfig
+          from spiralreality_AIT_onepass_aifcore_integrated.integrated.multilingual import (
+              AVAILABLE_LANGUAGES, SLAVIC_LANGUAGES, build_multilingual_corpus)
           m = OnePassAIT(latent_dim=8, encoder_layers=1, encoder_heads=2, encoder_backend="numpy")
           before = m.encoder.Wq[0].copy()
           m.train_student(["ab cd"], [["ab", " ", "cd"]], StudentTrainingConfig(
@@ -40,11 +44,50 @@ jobs:
           restored = OnePassAIT(latent_dim=8, encoder_layers=1, encoder_heads=2, encoder_backend="numpy")
           restored.load_state_dict(json.loads(json.dumps(m.state_dict())))
           assert restored.segment_text("ab cd", include_confidence=True) == m.segment_text("ab cd", include_confidence=True)
+          assert set(SLAVIC_LANGUAGES) == {"uk", "pl", "cs"}
+          assert set(SLAVIC_LANGUAGES) <= set(AVAILABLE_LANGUAGES)
+          demo_texts, demo_segments, demo_tags = build_multilingual_corpus(
+              languages=SLAVIC_LANGUAGES, include_reflective=False, shuffle=False)
+          assert set(demo_tags) == set(SLAVIC_LANGUAGES)
+          assert all("".join(parts) == text for text, parts in zip(demo_texts, demo_segments))
+          tiny_segments = [
+              ["Пам’ять", " ", "і", " ", "ґанок", "."],
+              ["Żółty", " ", "żuk", "."],
+              ["Český", " ", "příběh", "."],
+          ]
+          tiny_texts = ["".join(parts) for parts in tiny_segments]
+          unicode_probes = tiny_texts + ["ЄІЇ Ґґ об'єкт, пам’ять, звʼязок.\tа\u0301\n"]
+          predictions = {text: restored.segment_text(text, include_confidence=True)
+                         for text in unicode_probes}
+          assert all("".join(restored.segment_text(text)) == text for text in unicode_probes)
+          student = restored.student
+          warm_cfg = StudentTrainingConfig(
+              epochs=0, validation_split=0, phase_lr=0, shuffle_train=False, warm_start=True,
+              hidden_dim=student.hidden_dim, emb_dim=student.emb_dim, window=student.window,
+              context_hidden_dim=student.context_hidden_dim, lexical_buckets=student.lexical_buckets,
+              dtype=np.dtype(student.dtype).name, use_encoder_context=student.use_encoder_context,
+              train_context_encoder=student.train_context_encoder)
+          snapshot = deepcopy(restored.state_dict())
+          summary = restored.train_student(tiny_texts, tiny_segments, warm_cfg)
+          assert summary["warm_start"] is True and summary["epochs_completed"] == 0
+          assert restored.state_dict() == snapshot
+          assert all(restored.segment_text(text, include_confidence=True) == expected
+                     for text, expected in predictions.items())
+          head_before = student.W_out.copy()
+          encoder_before = {name: value.copy() for name, value in
+                            restored.encoder.trainable_parameters().items()}
+          phase_before = deepcopy(restored.phase.export_state().basis)
+          summary = restored.train_student(tiny_texts, tiny_segments, replace(warm_cfg, epochs=1))
+          assert summary["warm_start"] is True and summary["epochs_completed"] == 1
+          assert not np.array_equal(student.W_out, head_before)
+          assert any(not np.array_equal(value, encoder_before[name]) for name, value in
+                     restored.encoder.trainable_parameters().items())
+          assert restored.phase.export_state().basis == phase_before
+          assert all("".join(restored.segment_text(text)) == text for text in unicode_probes)
           selection = m.select_policy_aif("ab cd")
           assert selection["selection_mode"] == "posterior_risk"
           assert selection["selected_risk"] <= selection["baseline_risk"]
           assert all(row["epistemic"] == 0 for row in selection["candidates"])
-          from copy import deepcopy
           from spiralreality_AIT_onepass_aifcore_integrated.integrated.acquisition import ContextAcquisitionModel
           from spiralreality_AIT_onepass_aifcore_integrated.integrated.active_context import ActiveContextConfig, StringTextSource
           session = m.active_text_session(ContextAcquisitionModel())

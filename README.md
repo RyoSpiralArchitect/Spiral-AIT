@@ -25,6 +25,14 @@ and [the English/Japanese/Chinese experiment](docs/trilingual-context-2026-10-08
 for measured results and limits. The [policy and learning follow-up](docs/policy-learning-2026-10-08.md)
 repairs optimizer scaling and compares document budgets and initialization seeds.
 
+The [Ukrainian and Slavic adaptation pilot](docs/slavic-ukrainian-2026-10-29.md)
+adds Ukrainian (`uk`), Polish (`pl`) and Czech (`cs`) demo fixtures and genuine
+continuation from existing Python weights. In the bounded external-data study,
+Ukrainian non-whitespace boundary micro F1 rises from 7.35% to 98.24%.
+Slavic-only continuation severely forgets Japanese/Chinese; rehearsing the old
+languages largely preserves Japanese, while Chinese still loses 0.80 points of
+full-boundary macro F1. These are segmentation results on a small fixed split.
+
 ## AIT observation and action loop
 
 The optional [grounded context controller](docs/active-context-2026-10-27.md)
@@ -147,6 +155,27 @@ contain the learned encoder weights. The supervised path replaces heuristic
 encoder-gate updates. `phase_lr=0` also freezes phase updates for a controlled
 comparison. Character input vectors and phase signals are not differentiated.
 Native encoders without the backward interface reject this option explicitly.
+
+To continue training a fitted Python model, reuse its matching architecture
+configuration with `warm_start=True`:
+
+```python
+from dataclasses import replace
+
+# cfg is the configuration used to fit model; new labels reconstruct new texts.
+model.train_student(new_texts, new_segments,
+                    cfg=replace(cfg, warm_start=True, epochs=4))
+```
+
+The default starts a fresh head. Warm continuation validates architecture,
+precision, lexical buckets and context compatibility before changing weights;
+zero epochs preserve them exactly. Checkpoints do not save the training random
+generator. For reproducible shuffle order, explicitly reseed `model.student.rng`;
+this does not promise identical uninterrupted training. The small authored Slavic fixtures
+are available with `train_student(languages=("uk", "pl", "cs"),
+include_reflective=False)`; the external-data pilot uses separate pinned UD
+sources, not those fixtures.
+
 In the completed small-budget PUD pilot, this option slightly reduced F1 in all
 three languages. It remains experimental; the report records the negative result
 alongside calibration and streaming measurements.
@@ -325,7 +354,7 @@ independent whitespace/punctuation baseline, perturbations, and inference
 ablations. Context-off ablations are not separately retrained models.
 
 The earlier 0.9140 example mixed training and evaluation text; it is not a
-generalization result. The bundled corpus has only 33 synthetic examples.
+generalization result. The bundled corpus contains only 42 synthetic examples.
 Current measurements and matched comparisons are linked in
 [the upgrade evidence](docs/upgrade-2026-10-05.md).
 
@@ -435,7 +464,8 @@ with `SegmentationAIFConfig(selection_mode="legacy_efe")`.
 - Visualization ready: `notebooks/run_demo.ipynb` mirrors the demo with Matplotlib/Seaborn hooks for
   attention maps, phase traces, and gate overlays.
 - Curated corpora: the demo now assembles a multilingual dataset that augments the reflective
-  English/Japanese anchors with curated Spanish, French, German, and Chinese narratives. The helper
+  English/Japanese anchors with curated Spanish, French, German, Chinese,
+  Ukrainian, Polish, and Czech narratives. The helper
   utilities in `integrated/multilingual.py` register the segments so the trainer and tests can reuse
   them consistently while exposing language histograms and per-language length/token statistics for
   rapid dataset audits.

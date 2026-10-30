@@ -199,6 +199,48 @@ _MULTILINGUAL_RAW: Mapping[str, Tuple[Tuple[str, str], ...]] = {
             "相位|编码|帮助|注意力|在|跨域|文本|上|快速|适应|。",
         ),
     ),
+    "uk": (
+        (
+            "Модель читає український текст і перевіряє межі слів.",
+            "Модель|читає|український|текст|і|перевіряє|межі|слів|.",
+        ),
+        (
+            "Пам'ять зберігає попередні спостереження, а висновки змінюються.",
+            "Пам'ять|зберігає|попередні|спостереження|,|а|висновки|змінюються|.",
+        ),
+        (
+            "Об’єкт і зв’язок залишаються цілими словами.",
+            "Об’єкт|і|зв’язок|залишаються|цілими|словами|.",
+        ),
+        (
+            "Ґрунтовний аналіз допомагає перевірити гіпотези.",
+            "Ґрунтовний|аналіз|допомагає|перевірити|гіпотези|.",
+        ),
+        (
+            "Мо́ва і памʼять допомагають поєднувати нові спостереження.",
+            "Мо́ва|і|памʼять|допомагають|поєднувати|нові|спостереження|.",
+        ),
+    ),
+    "pl": (
+        (
+            "Model czyta polski tekst i sprawdza granice słów.",
+            "Model|czyta|polski|tekst|i|sprawdza|granice|słów|.",
+        ),
+        (
+            "Nowe obserwacje pomagają dokładniej ocenić wcześniejsze wnioski.",
+            "Nowe|obserwacje|pomagają|dokładniej|ocenić|wcześniejsze|wnioski|.",
+        ),
+    ),
+    "cs": (
+        (
+            "Model čte český text a kontroluje hranice slov.",
+            "Model|čte|český|text|a|kontroluje|hranice|slov|.",
+        ),
+        (
+            "Nová pozorování pomáhají zpřesnit předchozí závěry.",
+            "Nová|pozorování|pomáhají|zpřesnit|předchozí|závěry|.",
+        ),
+    ),
 }
 
 

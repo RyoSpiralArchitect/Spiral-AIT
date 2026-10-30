@@ -41,6 +41,9 @@ for code in dataset_languages():
 
 
 AVAILABLE_LANGUAGES: Tuple[str, ...] = tuple(sorted(LANGUAGE_CORPORA.keys()))
+# A first Slavic demo pack; these authored fixtures are separate from pinned
+# external corpora and never serve as held-out learning-quality evidence.
+SLAVIC_LANGUAGES: Tuple[str, ...] = ("uk", "pl", "cs")
 
 
 def build_multilingual_corpus(
@@ -244,6 +247,7 @@ def multilingual_segment_stream(
 
 __all__ = [
     "AVAILABLE_LANGUAGES",
+    "SLAVIC_LANGUAGES",
     "LANGUAGE_CORPORA",
     "LanguageCorpus",
     "build_multilingual_corpus",
