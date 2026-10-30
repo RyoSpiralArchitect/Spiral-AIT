@@ -1,5 +1,5 @@
 
-# SpiralReality-AIT — One-Pass Active-Inference-Inspired Text Segmentation (NN + CRF)
+# Spiral-AIT — One-Pass Active-Inference-Inspired Text Segmentation (NN + CRF)
 
 [![License](https://img.shields.io/github/license/RyoSpiralArchitect/SpiralReality-AIT)](LICENSE)
 ![Python](https://img.shields.io/badge/python-3.9%2B-blue)
