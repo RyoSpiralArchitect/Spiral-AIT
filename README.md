@@ -33,6 +33,14 @@ Slavic-only continuation severely forgets Japanese/Chinese; rehearsing the old
 languages largely preserves Japanese, while Chinese still loses 0.80 points of
 full-boundary macro F1. These are segmentation results on a small fixed split.
 
+The [prospective retention follow-up](docs/retention-guard-2026-11-01.md)
+adds 512 fresh evaluation cases from separate corpora. With the same example
+budget, Chinese-priority rehearsal reduces the fresh Chinese full-macro F1 loss
+from 1.04 to 0.45 points while preserving Ukrainian non-whitespace micro F1
+(91.94% → 91.86% on that new corpus). Fixed checkpoint interpolation worsens
+Ukrainian substantially. Both candidates fail the predeclared joint retention
+gate; defaults are unchanged and all negative results are retained.
+
 ## AIT observation and action loop
 
 The optional [grounded context controller](docs/active-context-2026-10-27.md)
@@ -175,6 +183,22 @@ this does not promise identical uninterrupted training. The small authored Slavi
 are available with `train_student(languages=("uk", "pl", "cs"),
 include_reflective=False)`; the external-data pilot uses separate pinned UD
 sources, not those fixtures.
+
+An opt-in offline weight-space utility is available for compatible Python
+checkpoints:
+
+```python
+from spiralreality_AIT_onepass_aifcore_integrated.integrated.checkpoint_blend import blend_checkpoints
+
+mixed_state = blend_checkpoints(reference_state, adapted_state,
+                                adaptation_weight=0.75)
+```
+
+It validates architecture, precision, phase and parameter compatibility, and
+returns a single ordinary checkpoint. Weight interpolation does not guarantee
+prediction interpolation or retained accuracy: the fixed 0.75 candidate failed
+the Ukrainian-preservation gate in the follow-up above. It does not change the
+default training or inference behavior.
 
 In the completed small-budget PUD pilot, this option slightly reduced F1 in all
 three languages. It remains experimental; the report records the negative result

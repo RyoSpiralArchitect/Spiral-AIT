@@ -1,0 +1,33 @@
+{
+  "schema_version": 1,
+  "study": "prospective-retention-guard-v1",
+  "prior_plan": "reports/slavic-ukrainian-2026-10-29/plan.json",
+  "prior_contract_sha256": "cb5172467793757601b266bc45e04332002e1da8ee903e92c9eed5d759d75cb8",
+  "prior_summary": "reports/slavic-ukrainian-2026-10-29/summary.json",
+  "prior_summary_sha256": "69ebf529a1e8856c4ef086184ce4b9c00d7449ec534cbbf122d3526918265a60",
+  "fresh_manifest": "configs/retention-ood-v2.18-sources.json",
+  "fresh_manifest_sha256": "a882e520be679d07814af99a6e1da9da0f7dc009320c36a9c8586d009d994120",
+  "fresh_cap_per_language": 128,
+  "fresh_max_chars": 192,
+  "selection_seed": 20261101,
+  "seeds": [
+    5042,
+    101
+  ],
+  "replay_per_language": {
+    "en": 64,
+    "ja": 64,
+    "zh": 160
+  },
+  "adaptation_weight": 0.75,
+  "retention_tolerance": {
+    "en": 0.005,
+    "ja": 0.005,
+    "zh": 0.0025
+  },
+  "bootstrap": {
+    "seed": 20261101,
+    "samples": 2000
+  },
+  "protocol": "Prospective fixed comparison. Train only on the exact old 384 Slavic cases and 288 old-language training cases; change replay allocation 96/96/96 to 64/64/160 with the same hash order, four epochs, all previous optimizer settings and two shuffle seeds. Compare pre-adaptation, two immutable historical rehearsal checkpoints, two new priority-replay checkpoints, and their fixed 0.75 adapted + 0.25 reference weight interpolations. All seven conditions score all 663 old cases plus 128 evaluation-only official test cases each from Ukrainian IU, English EWT, Japanese GSD and Chinese GSDSimp. Exclude normalized duplicates and exact prior-source overlaps before length/caps; never train or select a model/ratio/checkpoint using fresh corpora. The fixed mixed candidate must preserve old Ukrainian non-whitespace micro F1 >=0.97, fresh Ukrainian within 0.005 of historical rehearsal, fresh Chinese at least historical rehearsal, and all fresh/historical EN/JA/ZH full macro F1 within declared tolerances of pre-adaptation. Report every failed gate and negative result without retries or retuning. Unknown Chinese source document IDs and sentence-like Japanese provider units preclude document confidence intervals there. Other intervals are conditional on supplied units and fixed pretrained initialization. No language-oracle routing or inference ensemble. No fluency, general retention, calibrated correctness or production claim. Raw text, predictions and checkpoint weights remain local; Ukrainian IU noncommercial evaluation data never trains candidates."
+}
