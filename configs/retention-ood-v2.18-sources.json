@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "release": "r2.18",
+  "usage": "Evaluation only; no training or selection on these corpora. Raw text remains local. Underlying source rights and all upstream terms are retained. Ukrainian IU is noncommercial; it is not used to train the published-code experiment checkpoints.",
+  "sources": [
+    {
+      "language": "uk",
+      "source_id": "UD_Ukrainian-IU",
+      "revision": "0d5ed088e959ccfbd933d768114d8503c32c9b37",
+      "license": "CC-BY-NC-SA-4.0",
+      "files": {
+        "uk_iu-ud-test.conllu": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Ukrainian-IU/0d5ed088e959ccfbd933d768114d8503c32c9b37/uk_iu-ud-test.conllu",
+          "bytes": 2506721,
+          "sha256": "5538dec31c89b0cd0e5141d8a9c6bdc0099103eab3c5c6b9078ab95e67be1286"
+        },
+        "README.md": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Ukrainian-IU/0d5ed088e959ccfbd933d768114d8503c32c9b37/README.md",
+          "bytes": 9922,
+          "sha256": "223eff5c76df5c3cd033f3aa54506c0e3d43874de2fb7aebaf746113b0941145"
+        },
+        "LICENSE.txt": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Ukrainian-IU/0d5ed088e959ccfbd933d768114d8503c32c9b37/LICENSE.txt",
+          "bytes": 172,
+          "sha256": "af9de4667fae772e35a43655f8d45ab6f80e7801a5fdc4f540bbbd8d207516fc"
+        }
+      },
+      "document_policy": "Use supplied newdoc IDs only; missing IDs remain null and preclude document-bootstrap intervals. Provider document IDs need not identify independent original texts."
+    },
+    {
+      "language": "en",
+      "source_id": "UD_English-EWT",
+      "revision": "b7711cce01cdd4f5fcc0a8199b8a50d951b16c0c",
+      "license": "CC-BY-SA-4.0",
+      "files": {
+        "en_ewt-ud-test.conllu": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/b7711cce01cdd4f5fcc0a8199b8a50d951b16c0c/en_ewt-ud-test.conllu",
+          "bytes": 1900101,
+          "sha256": "fa024f43dc5da3c5ac02563bc9bd0e974f46cbb1560823976a8f342a37dc494a"
+        },
+        "README.md": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/b7711cce01cdd4f5fcc0a8199b8a50d951b16c0c/README.md",
+          "bytes": 24522,
+          "sha256": "c2dc7edaf5937d18cb3ff142410fde7460e32faa69b2bd0a041abc3f957da281"
+        },
+        "LICENSE.txt": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_English-EWT/b7711cce01cdd4f5fcc0a8199b8a50d951b16c0c/LICENSE.txt",
+          "bytes": 20014,
+          "sha256": "b3d1b0f4c6ae151f7eb78738f46ebd5ee140f8a7f76501ba26af123140d35ae7"
+        }
+      },
+      "document_policy": "Use supplied newdoc IDs only; missing IDs remain null and preclude document-bootstrap intervals. Provider document IDs need not identify independent original texts."
+    },
+    {
+      "language": "ja",
+      "source_id": "UD_Japanese-GSD",
+      "revision": "33e7310b58308e85fd2b33a2fc3ef3e434f821c7",
+      "license": "CC-BY-SA-4.0",
+      "files": {
+        "ja_gsd-ud-test.conllu": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Japanese-GSD/33e7310b58308e85fd2b33a2fc3ef3e434f821c7/ja_gsd-ud-test.conllu",
+          "bytes": 3111982,
+          "sha256": "5f50ee6ed45c7ebda3787e593eaf5e9a225f25e53f6b4b32df778031862c843f"
+        },
+        "README.md": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Japanese-GSD/33e7310b58308e85fd2b33a2fc3ef3e434f821c7/README.md",
+          "bytes": 8905,
+          "sha256": "5256741c40fb99fc673967bcbc35c28d09666fb8cee992ee7c20d553a1c0b380"
+        },
+        "LICENSE.txt": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Japanese-GSD/33e7310b58308e85fd2b33a2fc3ef3e434f821c7/LICENSE.txt",
+          "bytes": 202,
+          "sha256": "899b1804a12ebc090b96339614eede1b64b686721b650a71430b55b5235f7f79"
+        }
+      },
+      "document_policy": "Use supplied newdoc IDs only; missing IDs remain null and preclude document-bootstrap intervals. Provider document IDs need not identify independent original texts.",
+      "document_caveat": "Japanese GSD supplied newdoc IDs equal sentence IDs; they are provider units, not proven independent original documents."
+    },
+    {
+      "language": "zh",
+      "source_id": "UD_Chinese-GSDSimp",
+      "revision": "7b61ed473f963e911788efdf1f478154bc1053e4",
+      "license": "CC-BY-SA-4.0",
+      "files": {
+        "zh_gsdsimp-ud-test.conllu": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Chinese-GSDSimp/7b61ed473f963e911788efdf1f478154bc1053e4/zh_gsdsimp-ud-test.conllu",
+          "bytes": 1136613,
+          "sha256": "3af8046a6f32477b4d5cf3dd06bbf38682a380fe77aade3f68de97e51ab94900"
+        },
+        "README.md": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Chinese-GSDSimp/7b61ed473f963e911788efdf1f478154bc1053e4/README.md",
+          "bytes": 3105,
+          "sha256": "02287bdf80282151d8ca7ef3c3f7a3c3b98609f7266f145e3e3dd0a05693abd3"
+        },
+        "LICENSE.txt": {
+          "url": "https://raw.githubusercontent.com/UniversalDependencies/UD_Chinese-GSDSimp/7b61ed473f963e911788efdf1f478154bc1053e4/LICENSE.txt",
+          "bytes": 202,
+          "sha256": "899b1804a12ebc090b96339614eede1b64b686721b650a71430b55b5235f7f79"
+        }
+      },
+      "document_policy": "Use supplied newdoc IDs only; missing IDs remain null and preclude document-bootstrap intervals. Provider document IDs need not identify independent original texts."
+    }
+  ]
+}

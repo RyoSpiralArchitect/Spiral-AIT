@@ -84,6 +84,15 @@ jobs:
                      restored.encoder.trainable_parameters().items())
           assert restored.phase.export_state().basis == phase_before
           assert all("".join(restored.segment_text(text)) == text for text in unicode_probes)
+          from spiralreality_AIT_onepass_aifcore_integrated.integrated.checkpoint_blend import blend_checkpoints
+          adapted = restored.state_dict()
+          mixed = blend_checkpoints(snapshot, adapted, adaptation_weight=0.75)
+          assert mixed["phase"] == snapshot["phase"]
+          assert mixed["encoder"] == mixed["student"]["_encoder"]
+          assert blend_checkpoints(snapshot, adapted, adaptation_weight=0) == snapshot
+          mixed_model = OnePassAIT(latent_dim=8, encoder_layers=1, encoder_heads=2, encoder_backend="numpy")
+          mixed_model.load_state_dict(json.loads(json.dumps(mixed)))
+          assert all("".join(mixed_model.segment_text(text)) == text for text in unicode_probes)
           selection = m.select_policy_aif("ab cd")
           assert selection["selection_mode"] == "posterior_risk"
           assert selection["selected_risk"] <= selection["baseline_risk"]
